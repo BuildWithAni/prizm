@@ -1,0 +1,25 @@
+{
+  "name": "codelens-web",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@react-three/fiber": "^9.8.2",
+    "framer-motion": "^14.4.0",
+    "next": "^15.5.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/three": "^0.186.0",
+    "typescript": "^5.8.0"
+  }
+}
