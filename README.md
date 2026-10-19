@@ -1,69 +1,179 @@
-# CodeLens AI (repo: prizm)
+<div align="center">
 
-An educational platform where the **runtime determines what happened** and the **AI explains why it matters**. Students write Python, execute it, step through a recorded execution trace, and watch the code highlight, variable inspector and call stack stay perfectly synchronized — the foundation for a trace-grounded AI tutor.
+<!-- Animated title using SVG -->
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=700&size=40&duration=3000&pause=1000&color=A855F7&center=true&vCenter=true&width=600&height=80&lines=✦+prizm;CodeLens+AI;See+your+code+think." alt="Prizm — CodeLens AI" />
 
-This repo implements **Priority 1 (visual execution loop), Priority 2 (AST flowchart) and Priority 3 (contextual AI tutor)**, with Priority 4 scaffolded.
+<br/>
 
-## Architecture
+<img src="https://readme-typing-svg.demolab.com?font=Inter&weight=400&size=18&duration=4000&pause=1000&color=94A3B8&center=true&vCenter=true&multiline=false&width=700&height=40&lines=The+runtime+determines+what+happened.;The+AI+explains+why+it+matters.;Step+through+execution%2C+not+imagination." alt="Tagline" />
 
-Two separate but connected pipelines:
+<br/><br/>
 
-- **Deterministic pipeline** — code → execution → trace → visual state (implemented).
-- **AI learning pipeline** — selected visual state + student question → explanation → practice → assessment (explanation implemented via the AI Tutor; practice/assessment scaffolded, Priority 4).
+<!-- Badges -->
+[![Next.js](https://img.shields.io/badge/Next.js-15-black?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![License](https://img.shields.io/badge/License-MIT-A855F7?style=for-the-badge)](LICENSE)
+
+<br/>
+
+<!-- Animated divider -->
+<img src="https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/rainbow.png" width="100%">
+
+</div>
+
+<br/>
+
+## ✦ What is Prizm?
+
+> Students write code. Most tools show them **the result**.  
+> Prizm shows them the **journey** — every variable mutation, every function call, every branch taken — and then an AI explains *why* each moment matters.
+
+**Prizm** is an educational code execution platform where:
+
+1. 🧠 **The runtime records everything** — a complete, step-by-step execution trace
+2. 🎬 **You scrub through time** — like a video player for your code
+3. 🔍 **Panels stay perfectly synced** — editor highlight, variable inspector, call stack, event log
+4. 🤖 **The AI explains grounded reality** — not hallucinations, but your *actual* trace
+
+<br/>
+
+<div align="center">
+
+<!-- Animated feature wave -->
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=14&duration=2500&pause=600&color=A855F7&center=true&vCenter=true&width=700&height=30&lines=→+Trace-grounded+AI+Tutor;→+Step-by-step+execution+replay;→+AST+Flowchart+with+live+path+overlay;→+Variable+Inspector+%2B+Call+Stack;→+Monaco+Editor+with+synchronized+highlights" alt="Features" />
+
+</div>
+
+<br/>
+
+---
+
+## 🏗️ Architecture
+
+Two separate but deeply connected pipelines:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    DETERMINISTIC PIPELINE                        │
+│                                                                   │
+│  Source Code  →  Execution  →  Trace  →  Visual State           │
+│                                                                   │
+│  sys.settrace records every call/line/return/exception event     │
+│  Full variable snapshots stored at every step                    │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓  selected step
+┌─────────────────────────────────────────────────────────────────┐
+│                     AI LEARNING PIPELINE                         │
+│                                                                   │
+│  Visual State  →  Student Question  →  Grounded Explanation      │
+│                                                                   │
+│  OpenRouter (Claude) reads the actual trace, not the source      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Repository layout
 
 ```
 prizm/
-├── apps/web/                    # Next.js + TypeScript frontend
-│   ├── app/editor/              # three-panel workspace page
+├── apps/web/                    # Next.js 15 + TypeScript frontend
+│   ├── app/editor/              # Three-panel workspace
 │   ├── components/
-│   │   ├── editor/              # Monaco editor with synced highlight
-│   │   ├── execution/           # transport controls + timeline scrubber
-│   │   ├── visualization/       # variables, call stack, event log, output
-│   │   └── tutor/               # AI tutor chat (trace-grounded OpenRouter answers)
-│   ├── hooks/useExecution.ts    # ONE shared state: trace + selected step
+│   │   ├── editor/              # Monaco editor — synced line highlight
+│   │   ├── execution/           # Timeline scrubber + transport controls
+│   │   ├── visualization/       # Variables, call stack, event log, output
+│   │   └── tutor/               # AI tutor chat (trace-grounded answers)
+│   ├── hooks/useExecution.ts    # Single shared state: trace + selected step
 │   └── lib/                     # API client, trace types, formatting
 │
-├── services/api/                # FastAPI (modular monolith)
+├── services/api/                # FastAPI modular monolith
 │   └── app/
-│       ├── routes/              # executions, sessions, flowcharts, tutor
-│       ├── execution/           # isolated child-process runner + limits
-│       ├── tracing/             # sys.settrace-based tracer (the heart)
+│       ├── routes/              # executions · sessions · flowcharts · tutor
+│       ├── execution/           # Isolated child-process runner + limits
+│       ├── tracing/             # sys.settrace tracer — the heart of prizm
 │       ├── visualization/       # AST flowchart engine
-│       ├── config.py            # env-backed config (keys stay in .env)
-│       └── models.py            # shared Pydantic trace contracts
+│       ├── config.py            # env-backed config (keys in .env, gitignored)
+│       └── models.py            # Shared Pydantic trace contracts
 │
-├── tests/
-│   ├── conftest.py
-│   ├── execution/               # tracing, snapshots, limits, error paths
-│   ├── visualization/           # flowchart structure
-│   └── tutor/                   # prompt assembly, fallback, errors
-│
-└── README.md
+└── tests/
+    ├── execution/               # Tracing, snapshots, limits, error paths
+    ├── visualization/           # Flowchart structure
+    └── tutor/                   # Prompt assembly, fallback, errors
 ```
 
-## How execution tracing works
+<br/>
 
-1. `POST /api/executions` receives source code.
-2. The runner spawns `services/api/app/tracing/tracer.py` as a **separate process**.
-3. The tracer compiles the student source under a synthetic filename and runs it with `sys.settrace`, recording `call` / `line` / `return` / `exception` events. Only student frames are traced — imports and library internals never pollute the trace.
-4. Every event carries a **full snapshot of the frame's locals**, serialized into plain JSON data. Storing a snapshot per step makes backward playback trivially correct for educational-sized programs.
-5. The frontend keeps the whole trace and only changes the *selected step*; pressing Previous never re-executes the code.
+---
 
-Runaway code is stopped three ways: a soft time limit checked on every event (keeps a partial trace), an event-count cap, and a hard subprocess timeout in the runner.
+## ⚡ Features
 
-## Running locally
+<table>
+<tr>
+<td width="50%">
 
-### Backend (port 8000)
+### 🎬 Execution Replay
+Step **forward and backward** through every event in your program without re-executing. All state is stored in the trace — Previous is just `stepIndex - 1`.
+
+</td>
+<td width="50%">
+
+### 🔬 Variable Inspector
+Every step carries a **full snapshot** of local variables in every frame. Deep-inspect lists, dicts, and nested objects at any moment in time.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### 🌊 AST Flowchart
+An AST-derived control-flow graph with the **executed path overlaid**. Click any node to jump the stepper to that exact moment.
+
+</td>
+<td width="50%">
+
+### 🤖 Trace-Grounded Tutor
+The AI sees `line`, `frame`, `locals snapshot`, and `stdout delta` for the **selected step** — answers are grounded in reality, not guessing.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### 🛡️ Safe Execution
+Code runs in an **isolated child process** with a soft time limit (partial trace preserved), event-count cap, and a hard subprocess timeout.
+
+</td>
+<td width="50%">
+
+### 💸 Credit-Aware Fallback
+The tutor retries within an affordable token budget, then falls through `TUTOR_FALLBACK_MODELS` — works on free-tier API keys too.
+
+</td>
+</tr>
+</table>
+
+<br/>
+
+---
+
+## 🚀 Running Locally
+
+### 1 — Backend (port 8000)
 
 ```bash
+# Create virtualenv
 python -m venv .venv
-.venv/Scripts/pip install -r services/api/requirements.txt     # Windows
-.venv/bin/pip install -r services/api/requirements.txt         # macOS/Linux
 
+# Install dependencies
+.venv/Scripts/pip install -r services/api/requirements.txt   # Windows
+.venv/bin/pip  install -r services/api/requirements.txt      # macOS / Linux
+
+# Start the API
 .venv/Scripts/uvicorn app.main:app --port 8000 --app-dir services/api
 ```
 
-### Frontend (port 3000)
+### 2 — Frontend (port 3000)
 
 ```bash
 cd apps/web
@@ -71,60 +181,104 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000/editor — it redirects there automatically. The API base URL defaults to `http://localhost:8000` and can be overridden with `NEXT_PUBLIC_API_URL`.
+Open **http://localhost:3000/editor** — the landing page redirects there automatically.
 
-### AI Tutor (optional)
+> **Override the API URL** with `NEXT_PUBLIC_API_URL` if the backend is on a different host.
 
-The **AI Tutor** tab calls `POST /api/tutor/explain`, which forwards the question + the selected execution step to OpenRouter (OpenAI-compatible). Configure the repo-root `.env` (gitignored — never commit keys):
+### 3 — AI Tutor (optional)
 
-```bash
+Create a `.env` file at the repo root (gitignored):
+
+```env
 OPENROUTER_API_KEY=sk-or-...
-TUTOR_MODEL=anthropic/claude-fable-5.1        # default: current flagship
+TUTOR_MODEL=anthropic/claude-fable-5.1
 TUTOR_FALLBACK_MODELS=anthropic/claude-sonnet-5.5,anthropic/claude-haiku-5.5
 ```
 
-If the key's credit can't afford the requested answer length, the route automatically retries the same model within its affordable token budget, then falls back through `TUTOR_FALLBACK_MODELS` — so the tutor keeps working on free-tier keys.
-
-### Tests
+### 4 — Tests
 
 ```bash
 .venv/Scripts/python -m pytest tests -q
 ```
 
-## API
+<br/>
 
-| Method | Path                             | Purpose                                        |
-| ------ | -------------------------------- | ---------------------------------------------- |
-| POST   | `/api/executions`                | Run source, get execution id, output and trace |
-| GET    | `/api/executions/{id}/trace`     | Retrieve a recorded trace for playback         |
-| GET    | `/api/health`                    | Liveness check                                 |
+---
 
-## The shared trace schema
+## 🔌 API Reference
 
-`services/api/app/models.py` (Pydantic) and `apps/web/lib/types.ts` (TypeScript) mirror each other — this contract is why the timeline, variable inspector and call-stack viewer all read the *same* events. Each event:
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/executions` | Submit source code → get execution id + trace |
+| `GET` | `/api/executions/{id}/trace` | Retrieve a recorded trace for playback |
+| `POST` | `/api/tutor/explain` | Ask the AI about the selected trace step |
+| `GET` | `/api/health` | Liveness check |
 
-```ts
-{
-  step: number;
-  event: "call" | "line" | "return" | "exception";
-  line: number | null;
-  functionName: string;
-  frameId: string;
+<br/>
+
+---
+
+## 📐 The Trace Schema
+
+`services/api/app/models.py` (Pydantic) and `apps/web/lib/types.ts` (TypeScript) are **mirrors** of each other — this contract keeps the timeline, variable inspector, and call-stack viewer all reading the same events.
+
+```typescript
+interface TraceEvent {
+  step:          number;
+  event:         "call" | "line" | "return" | "exception";
+  line:          number | null;
+  functionName:  string;
+  frameId:       string;
   parentFrameId: string | null;
-  locals: Record<string, SerializedValue>;   // full snapshot at this step
-  output: string;                            // console delta since last step
-  value?: SerializedValue;                   // return values
-  exception?: { type, message };
+  locals:        Record<string, SerializedValue>;  // full snapshot
+  output:        string;                           // stdout delta
+  value?:        SerializedValue;                  // return value
+  exception?:    { type: string; message: string };
 }
 ```
 
-## Security notes (demo-grade, by design)
+<br/>
 
-The tracer isolates student code in a child process with time, event-count and output-size limits, and the API never exposes credentials. This is **not** a production sandbox: for a real deployment, run executions in containers or a trusted execution service, add memory limits, and treat source code as untrusted input everywhere. Browser-side Pyodide is a lower-infrastructure alternative with its own constraints.
+---
 
-## Roadmap (priorities from the architecture doc)
+## 🗺️ Roadmap
 
-1. ✅ **Visual execution loop** — trace, stepping, synchronized panels (this repo).
-2. ✅ **One excellent flowchart** — AST-based control flow with the executed path overlaid; click a node to jump the stepper.
-3. ✅ **Contextual AI tutor** — chat grounded in the selected step's real trace (line, frame, variable snapshots, output) via OpenRouter, with credit-aware model fallback.
-4. **Evidence of learning** — prediction questions, exercises, progress tracking (Postgres/Supabase).
+<div align="center">
+
+| # | Feature | Status |
+|---|---------|--------|
+| 1 | Visual execution loop — trace, stepping, synchronized panels | ✅ **Done** |
+| 2 | AST-based control-flow flowchart with executed path overlay | ✅ **Done** |
+| 3 | Contextual AI tutor grounded in the selected trace step | ✅ **Done** |
+| 4 | Evidence of learning — prediction questions, exercises, progress tracking | 🔜 **Next** |
+
+</div>
+
+<br/>
+
+---
+
+## 🔒 Security Notes
+
+The tracer isolates student code in a child process with **time, event-count, and output-size limits**, and the API never exposes credentials.
+
+> ⚠️ **Demo-grade only.** For production: run executions in containers or a trusted sandbox, add memory limits, and treat all source code as untrusted input. Browser-side Pyodide is an alternative with its own constraints.
+
+<br/>
+
+---
+
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/rainbow.png" width="100%">
+
+<br/>
+
+<!-- Animated footer -->
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=13&duration=3000&pause=1000&color=64748B&center=true&vCenter=true&width=500&height=30&lines=Built+with+%E2%99%A5+by+BuildWithAni;prizm+—+see+your+code+think." alt="Footer" />
+
+<br/><br/>
+
+**[⬆ back to top](#-what-is-prizm)**
+
+</div>
