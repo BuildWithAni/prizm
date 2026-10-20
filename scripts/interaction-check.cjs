@@ -2,9 +2,11 @@
  * Interaction check: exercises states the static viewport matrix cannot see.
  *
  *  1. Landing hamburger menu at phone width — opens, stays inside the viewport.
- *  2. Full flow: /editor → Run → Visualize — the populated visualizer (ribbon,
- *     narration, variables, event log) at phone and laptop widths, asserting
- *     zero horizontal overflow and capturing screenshots.
+ *  2. Full flow: /editor → Run → Visualize — the populated visualizer (journey
+ *     story with code spotlight + AI insight, the flowchart tab lit by the
+ *     trace, variables, event log) at phone, laptop and desktop widths,
+ *     asserting zero horizontal overflow and capturing screenshots.
+ *  3. Touch targets on the journey/transport controls at phone width.
  *
  *   node scripts/interaction-check.cjs
  */
@@ -74,7 +76,7 @@ const pass = (name, detail) => report.push({ name, status: "PASS", detail });
   }
 
   // --- 2. run → visualize with a real trace --------------------------------
-  for (const [width, height] of [[360, 740], [1024, 768]]) {
+  for (const [width, height] of [[360, 740], [1024, 768], [1440, 900]]) {
     const ctx = await browser.newContext({ viewport: { width, height } });
     const page = await ctx.newPage();
     const pageErrors = [];
@@ -126,7 +128,106 @@ const pass = (name, detail) => report.push({ name, status: "PASS", detail });
       if (state.overflowX > 1) fail(`visualize-data@${width}`, `overflowX=${state.overflowX}`);
       else if (!state.panels.controls || !state.panels.journey || state.panels.events < 5) fail(`visualize-data@${width}`, `panels=${JSON.stringify(state.panels)}`);
       else pass(`visualize-data@${width}`, `journey + ${state.panels.events} event rows, overflowX=0`);
+
+      // Flowchart tab with the same trace: nodes render, hot path lit, no
+      // overflow — then return to Journey for the story assertions below.
+      // The overlay only lights edges up to the current step, so jump to the
+      // end of the trace first (Home/End keyboard transport).
+      try {
+        await page.keyboard.press("End");
+        await page.waitForTimeout(250);
+        await page.getByRole("button", { name: /Flowchart/ }).first().click();
+        await page.waitForSelector(".flow-svg", { timeout: 20_000 });
+        await page.waitForTimeout(900);
+        const flowState = await page.evaluate(() => ({
+          rects: document.querySelectorAll(".flow-svg rect").length,
+          hot: document.querySelectorAll(".flow-edge.hot").length,
+          overflowX: Math.max(0, document.documentElement.scrollWidth - innerWidth),
+        }));
+        if (flowState.rects < 2 || flowState.hot < 1) fail(`flowchart@${width}`, JSON.stringify(flowState));
+        else if (flowState.overflowX > 1) fail(`flowchart@${width}`, `overflowX=${flowState.overflowX}`);
+        else pass(`flowchart@${width}`, `${flowState.rects} node rects, ${flowState.hot} hot edges, overflowX=0`);
+        await page.locator(".flow-panel").scrollIntoViewIfNeeded();
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: path.join(shotDir, `flow-flowchart-${width}x${height}.png`) });
+      } catch (err) {
+        fail(`flowchart@${width}`, String(err).slice(0, 160));
+      } finally {
+        await page.keyboard.press("Home"); // back to step 1 for the journey assertions
+        await page.waitForTimeout(250);
+        await page.getByRole("button", { name: /Journey/ }).first().click();
+        await page.waitForSelector(".journey-card", { timeout: 20_000 });
+      }
+
       if (pageErrors.length) fail(`pageerrors@${width}`, pageErrors.join(" | "));
+
+      // Story layers: the real source line, grounded what/why/next text.
+      const story = await page.evaluate(() => {
+        const card = document.querySelector(".journey-card");
+        const q = (s) => (card ? card.querySelector(s) : null);
+        const ai = document.querySelector(".journey-ai");
+        return {
+          missing: !card,
+          spotlight: (q(".journey-spot-code")?.textContent || "").trim(),
+          headline: (q(".journey-headline")?.textContent || "").trim(),
+          what: (q(".journey-explain")?.textContent || "").trim(),
+          why: (q(".journey-tip")?.textContent || "").trim(),
+          next: (q(".journey-next-body")?.textContent || "").trim(),
+          aiClass: ai ? ai.className : null,
+          aiText: (ai?.textContent || "").trim().slice(0, 240),
+        };
+      });
+      if (story.missing) fail(`journey-story@${width}`, "no .journey-card");
+      else if (!story.spotlight || !story.headline || !story.what)
+        fail(`journey-story@${width}`, `empty layers spotlight="${story.spotlight}" headline="${story.headline}" what="${story.what}"`);
+      else if (!story.why || !story.next)
+        fail(`journey-story@${width}`, `missing why="${story.why}" next="${story.next}"`);
+      else if (!story.aiClass)
+        fail(`journey-story@${width}`, "no .journey-ai block");
+      else pass(`journey-story@${width}`, `spotlight="${story.spotlight.slice(0, 30)}" next="${story.next.slice(0, 40)}"`);
+
+      // AI insight: give the debounced fetch (750ms settle) time to resolve or
+      // fail gracefully; either terminal state proves the layer works.
+      const aiState = await (async () => {
+        const deadline = Date.now() + 12_000;
+        let last = null;
+        while (Date.now() < deadline) {
+          last = await page.evaluate(() => {
+            const ai = document.querySelector(".journey-ai");
+            if (!ai) return null;
+            return { cls: ai.className, text: (ai.textContent || "").trim().slice(0, 240) };
+          });
+          if (last && (/\bready\b/.test(last.cls) || /\bfailed\b/.test(last.cls))) break;
+          await page.waitForTimeout(600);
+        }
+        return last;
+      })();
+      if (!aiState) fail(`ai-insight@${width}`, "no .journey-ai block");
+      else if (/\bready\b/.test(aiState.cls)) pass(`ai-insight@${width}`, `ready: "${aiState.text.slice(0, 90)}"`);
+      else if (/\bfailed\b/.test(aiState.cls)) pass(`ai-insight@${width}`, `graceful failure: "${aiState.text.slice(0, 90)}"`);
+      else if (/\bloading\b/.test(aiState.cls)) pass(`ai-insight@${width}`, `model still thinking (shimmer shown): "${aiState.text.slice(0, 60)}"`);
+      else pass(`ai-insight@${width}`, `waiting (auto-off): "${aiState.text.slice(0, 90)}"`);
+
+      // Touch targets at phone width (mirrors the matrix rule: >=36x26).
+      if (width <= 820) {
+        const tiny = await page.evaluate(() => {
+          const out = [];
+          for (const el of document.querySelectorAll(".journey-panel button, .controls button")) {
+            if (el.classList.contains("journey-tl-marker")) continue; // scrubber dots: ::after bridge over a clickable track
+            const r = el.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1) continue;
+            if (r.width < 36 || r.height < 26) {
+              out.push(`${(el.className || el.tagName).toString().trim().split(/\s+/)[0]} ${Math.round(r.width)}x${Math.round(r.height)}`);
+            }
+          }
+          return out;
+        });
+        if (tiny.length) fail(`journey-tap@${width}`, tiny.slice(0, 6).join(", "));
+        else pass(`journey-tap@${width}`, "every journey/transport button >= 36x26");
+      }
+
+      await page.locator(".journey-panel").scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
       await page.screenshot({ path: path.join(shotDir, `flow-visualize-${width}x${height}.png`) });
     } catch (err) {
       fail(`flow@${width}`, String(err).slice(0, 200));

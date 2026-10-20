@@ -138,7 +138,7 @@ function inspectInPage() {
   const tiny = {};
   if (vw <= 820) {
     for (const el of document.body.querySelectorAll("button, a, .btn, .tab, .language-option")) {
-      if (el.classList.contains("ribbon-tick")) continue; // dense timeline: contiguous strip with bridged hit area
+      if (el.classList.contains("ribbon-tick") || el.classList.contains("journey-tl-marker")) continue; // dense strips: ::after hit area bridged over an already-clickable track
       const rect = el.getBoundingClientRect();
       if (rect.width < 1 || rect.height < 1) continue; // display:none has a 0x0 rect
         if (rect.width < 36 || rect.height < 26) {

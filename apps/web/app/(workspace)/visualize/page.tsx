@@ -5,7 +5,7 @@ import Link from "next/link";
 import Logo from "../../../components/landing/Logo";
 import CodeEditor from "../../../components/editor/CodeEditor";
 import ExecutionControls from "../../../components/execution/ExecutionControls";
-import StepNarrator from "../../../components/visualization/StepNarrator";
+import AnimatedStepJourney from "../../../components/visualization/AnimatedStepJourney";
 import VariableInspector from "../../../components/visualization/VariableInspector";
 import CallStack from "../../../components/visualization/CallStack";
 import EventLog from "../../../components/visualization/EventLog";
@@ -20,10 +20,11 @@ import { createFlowchart } from "../../../lib/api";
 import { KNOWN_TRACE_LANGUAGES, LANGUAGE_CATALOG, PREVIEW_LANGUAGES } from "../../../lib/languages";
 import type { Flowchart } from "../../../lib/types";
 
-type Tab = "state" | "flowchart" | "calltree" | "values";
+type Tab = "journey" | "state" | "flowchart" | "calltree" | "values";
 
 const TABS: { id: Tab; label: string; hint: string }[] = [
-  { id: "state", label: "Visual State", hint: "Narration, call stack and variables for the selected step" },
+  { id: "journey", label: "✨ Journey", hint: "Animated step-by-step learning mode with explanations and variable change animations" },
+  { id: "state", label: "State", hint: "Call stack and variables for the selected step" },
   { id: "flowchart", label: "Flowchart", hint: "Control flow of your program, lit up as it executes" },
   { id: "calltree", label: "Call Tree", hint: "Every function call, as a tree you can click through" },
   { id: "values", label: "Values", hint: "How each variable's value moved over the run" },
@@ -49,7 +50,7 @@ export default function VisualizePage() {
     execution,
   } = workspace;
 
-  const [tab, setTab] = useState<Tab>("state");
+  const [tab, setTab] = useState<Tab>("journey");
   const [flow, setFlow] = useState<{ source: string; chart: Flowchart | null; loading: boolean }>({
     source: "",
     chart: null,
@@ -408,9 +409,20 @@ export default function VisualizePage() {
                   </form>
                 )}
 
+                {tab === "journey" && (
+                  <AnimatedStepJourney
+                    events={execution.events}
+                    step={execution.step}
+                    onJump={execution.goto}
+                    code={code}
+                    language={language}
+                    playing={execution.playing}
+                    onTogglePlay={execution.togglePlay}
+                  />
+                )}
+
                 {tab === "state" && (
                   <>
-                    <StepNarrator events={execution.events} step={execution.step} onJump={execution.goto} />
                     <CallStack
                       frames={stack}
                       activeFrameId={activeFrameId}
