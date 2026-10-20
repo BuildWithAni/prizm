@@ -30,6 +30,10 @@ OPENROUTER_URL: str = os.environ.get(
 # capability for cost/latency, e.g. "anthropic/claude-sonnet-5.5".
 TUTOR_MODEL: str = os.environ.get("TUTOR_MODEL", "anthropic/claude-fable-5.1")
 TUTOR_TIMEOUT_SECONDS: float = float(os.environ.get("TUTOR_TIMEOUT_SECONDS", "60"))
+# Per-call output budget. Longer answers are stitched together automatically
+# via continuation calls, so this bounds one round-trip, not the whole reply.
+# Free-tier keys shrink it further when OpenRouter 402s.
+TUTOR_MAX_TOKENS: int = int(os.environ.get("TUTOR_MAX_TOKENS", "2048"))
 
 # Tried in order when the primary model is out of reach (credit-capped or
 # unavailable). Comma-separated.

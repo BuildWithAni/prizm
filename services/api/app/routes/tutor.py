@@ -19,6 +19,7 @@ from app.config import (
     OPENROUTER_API_KEY,
     OPENROUTER_URL,
     TUTOR_FALLBACK_MODELS,
+    TUTOR_MAX_TOKENS,
     TUTOR_MODEL,
     TUTOR_TIMEOUT_SECONDS,
 )
@@ -28,8 +29,31 @@ router = APIRouter(prefix="/api/tutor", tags=["tutor"])
 # Below this a credit-capped answer would be uselessly truncated — fall back
 # to the next model instead.
 _MIN_TUTOR_TOKENS = 120
-# Headroom for whole-file code blocks (the tutor can write the workspace).
-_DEFAULT_MAX_TOKENS = 1400
+# Output budget for a single round-trip. Answers longer than this are stitched
+# together by continuation calls (_MAX_CONTINUATIONS of them), so a free-tier
+# key that can only afford a few hundred tokens per call still delivers a
+# complete whole-file answer — in slices.
+_PER_CALL_MAX_TOKENS = TUTOR_MAX_TOKENS
+_MAX_CONTINUATIONS = 3
+
+# Sent after a cut-off reply: the model resumes mid-stream, so it must not
+# repeat, preamble, or reopen a fence that is already open.
+_CONTINUATION_PROMPT = """\
+Your previous reply was cut off at the token limit. Continue it EXACTLY from \
+the point where it stopped: do not repeat any text, do not add a preamble or \
+apology, and do not close and reopen any code fence — if a code block was \
+open, keep writing inside it and close it only when the code ends."""
+
+# Free-tier throttling is short-lived but self-reinforcing: rapid retries
+# extend the window. Shown instead of a generic 502 when models keep 429ing.
+_RATE_LIMIT_DETAIL = (
+    "The free model pool is rate-limiting requests right now — wait about a "
+    "minute and try again."
+)
+
+# Free models have a hard per-request cap; OpenRouter appends this notice to
+# the message CONTENT when it trips. Strip it so it never lands mid-code.
+_CUTOFF_MARKER = re.compile(r"\s*⚠\s*Cut off at the token limit[^\n]*\n?")
 
 TUTOR_SYSTEM_PROMPT = """\
 You are the PRIZM AI Tutor, embedded in an educational code-visualization IDE.
@@ -157,6 +181,101 @@ def _affordable_tokens(body: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _content_of(data: dict) -> str | None:
+    """Message content of a chat response, or None when malformed."""
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return content if isinstance(content, str) else None
+
+
+def _finish_of(data: dict) -> str | None:
+    try:
+        return data["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+async def _call_model(model: str, messages: list[dict], max_tokens: int) -> tuple[dict | None, int, int, str]:
+    """One model call under the credit/transient retry policy.
+
+    Returns (data, max_tokens, last_status, last_detail). `data` is None when
+    the call gave up. `max_tokens` reflects any budget shrink discovered on a
+    402, so follow-up continuation calls stay within what the key can afford.
+    """
+    credit_detail = (
+        "Out of OpenRouter credits for the available models — top up at "
+        "https://openrouter.ai/settings/credits."
+    )
+    # OpenRouter providers occasionally 5xx / reset; absorb a couple of
+    # transients before giving up on this model. 429 is handled separately —
+    # it needs a patient pause, not rapid retries.
+    transient_statuses = {408, 500, 502, 503, 504}
+
+    last_status, last_detail = 502, credit_detail
+    for attempt in range(4):  # credit-retry + transient retries
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.4,
+            "max_tokens": max_tokens,
+        }
+        try:
+            return await _post_chat(payload, OPENROUTER_API_KEY), max_tokens, last_status, last_detail
+        except httpx.TimeoutException:
+            last_status, last_detail = 504, "The tutor model timed out — try again."
+            if attempt < 2:
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status == 402:
+                # Credit-capped. Rejections cost nothing, so retry the same
+                # model within whatever budget the key can still afford
+                # (free-tier keys cap the flagship at a few hundred tokens).
+                budget = _affordable_tokens(exc.response.text)
+                if budget is not None and _MIN_TUTOR_TOKENS <= budget < max_tokens:
+                    max_tokens = budget - 10
+                    continue
+                last_status, last_detail = 402, credit_detail
+            elif status == 404:  # unknown/disabled model — skip to next
+                last_status, last_detail = 502, f"Model {model!r} is not available on OpenRouter."
+            elif status == 429:
+                # One patient pause for the throttle window, then give this
+                # model up — rapid re-trips only extend the window. The route
+                # aborts entirely once a second model reports the same limit.
+                last_status, last_detail = 429, _RATE_LIMIT_DETAIL
+                if attempt == 0:
+                    # Honor Retry-After, but never below 15s — a sub-second
+                    # header just re-trips the free-tier window — capped at 30s.
+                    header = exc.response.headers.get("Retry-After", "")
+                    delay = 15.0
+                    if header and header.replace(".", "", 1).isdigit():
+                        delay = min(max(float(header), 15.0), 30.0)
+                    await asyncio.sleep(delay)
+                    continue
+                break
+            elif status in transient_statuses:
+                last_status = 502
+                last_detail = f"The model provider returned {status}."
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+            else:  # deterministic client/auth error
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"The model provider returned {status}.",
+                ) from exc
+        except httpx.HTTPError:
+            last_status, last_detail = 502, "Could not reach OpenRouter."
+            if attempt < 2:
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+        break
+    return None, max_tokens, last_status, last_detail
+
+
 @router.post("/explain", response_model=TutorResponse)
 async def explain(req: TutorRequest) -> TutorResponse:
     if not OPENROUTER_API_KEY:
@@ -174,82 +293,57 @@ async def explain(req: TutorRequest) -> TutorResponse:
     messages.append({"role": "user", "content": req.question})
 
     model_chain = [TUTOR_MODEL] + [m for m in TUTOR_FALLBACK_MODELS if m and m != TUTOR_MODEL]
-    credit_detail = (
-        "Out of OpenRouter credits for the available models — top up at "
-        "https://openrouter.ai/settings/credits."
-    )
-    # OpenRouter providers occasionally 5xx / reset; absorb a couple of
-    # transients per model before moving down the chain.
-    transient_statuses = {408, 429, 500, 502, 503, 504}
 
-    data: dict | None = None
-    last_status, last_detail = 502, credit_detail
+    last_status, last_detail = 502, "The tutor model is unavailable — try again."
+    consecutive_429 = 0
     for model in model_chain:
-        max_tokens = _DEFAULT_MAX_TOKENS
-        for attempt in range(4):  # credit-retry + transient retries
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": 0.4,
-                "max_tokens": max_tokens,
-            }
-            try:
-                data = await _post_chat(payload, OPENROUTER_API_KEY)
-                break
-            except httpx.TimeoutException:
-                last_status, last_detail = 504, "The tutor model timed out — try again."
-                if attempt < 2:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-                break
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-                if status == 402:
-                    # Credit-capped. Rejections cost nothing, so retry the same
-                    # model within whatever budget the key can still afford
-                    # (free-tier keys cap the flagship at a few hundred tokens).
-                    budget = _affordable_tokens(exc.response.text)
-                    if budget is not None and _MIN_TUTOR_TOKENS <= budget < max_tokens:
-                        max_tokens = budget - 10
-                        continue
-                    last_status, last_detail = 402, credit_detail
+        data, max_tokens, status, detail = await _call_model(model, messages, _PER_CALL_MAX_TOKENS)
+        last_status, last_detail = status, detail
+        if data is None:
+            if status == 429:
+                consecutive_429 += 1
+                if consecutive_429 >= 2:
+                    # A *different* model hitting the same limit means the
+                    # throttle is IP/key-scoped — sweeping more models only
+                    # extends the window. Stop and say so honestly.
                     break
-                if status == 404:  # unknown/disabled model — skip to next
-                    last_status, last_detail = 502, f"Model {model!r} is not available on OpenRouter."
-                    break
-                if status in transient_statuses:
-                    last_status = 502
-                    last_detail = f"The model provider returned {status}."
-                    if attempt < 2:
-                        await asyncio.sleep(0.5 * (attempt + 1))
-                        continue
-                    break
-                raise HTTPException(  # deterministic client/auth error
-                    status_code=502,
-                    detail=f"The model provider returned {status}.",
-                ) from exc
-            except httpx.HTTPError:
-                last_status, last_detail = 502, "Could not reach OpenRouter."
-                if attempt < 2:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
+            continue
+        consecutive_429 = 0
+
+        first = _content_of(data)
+        if first is None:
+            last_status, last_detail = 502, "Unexpected response from the model provider."
+            continue
+
+        # Stitch continuation slices while the provider keeps cutting us off:
+        # a free-tier key that can only afford a few hundred tokens per call
+        # still delivers the complete answer — in slices, seamlessly joined.
+        parts = [_CUTOFF_MARKER.sub("", first)]
+        truncated = _finish_of(data) == "length"
+        for _ in range(_MAX_CONTINUATIONS):
+            if not truncated:
                 break
-        if data is not None:
-            break
+            convo = messages + [
+                {"role": "assistant", "content": "".join(parts)},
+                {"role": "user", "content": _CONTINUATION_PROMPT},
+            ]
+            more, max_tokens, _, _ = await _call_model(model, convo, max_tokens)
+            if more is None:
+                break  # out of credits or unreachable — keep what we have
+            chunk = _content_of(more)
+            if chunk is None:
+                break
+            parts.append(_CUTOFF_MARKER.sub("", chunk))
+            truncated = _finish_of(more) == "length"
 
-    if data is None:
-        raise HTTPException(status_code=last_status, detail=last_detail)
+        answer = "".join(parts).strip()
+        if not answer:
+            last_status, last_detail = 502, "The model returned an empty answer."
+            continue
+        return TutorResponse(
+            answer=answer,
+            model=str(data.get("model") or TUTOR_MODEL),
+            truncated=truncated,
+        )
 
-    try:
-        answer = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise HTTPException(status_code=502, detail="Unexpected response from the model provider.") from exc
-    if not isinstance(answer, str) or not answer.strip():
-        raise HTTPException(status_code=502, detail="The model returned an empty answer.")
-
-    finish = data["choices"][0].get("finish_reason")
-    return TutorResponse(
-        answer=answer.strip(),
-        model=str(data.get("model") or TUTOR_MODEL),
-        truncated=finish == "length",
-    )
+    raise HTTPException(status_code=last_status, detail=last_detail)

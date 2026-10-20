@@ -15,6 +15,12 @@ node_modules/
 out/
 npm-debug.log*
 
+# Portable toolchains (Kotlin compiler etc. — installed locally, not source)
+tools/
+
+# Runtime data (credit counters — machine-local, never committed)
+services/api/data/
+
 # Editors / OS
 .DS_Store
 .idea/

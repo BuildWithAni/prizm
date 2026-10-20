@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 
-from app.execution.runner import run_python
+from app import credits
+from app.execution.runner import run_traced
 from app.models import ExecutionRequest, ExecutionResponse
 
 router = APIRouter()
@@ -14,11 +15,36 @@ router = APIRouter()
 _STORE: dict[str, dict] = {}
 _STORE_LIMIT = 50
 
+# Traces that never reached a real engine — the credit is refunded so a
+# missing toolchain or a run-only language can never drain the daily batch.
+_UNMETERED_FAILURES = {"ToolchainUnavailable", "UnsupportedLanguage"}
+
 
 @router.post("/api/executions", response_model=ExecutionResponse)
-def create_execution(request: ExecutionRequest) -> ExecutionResponse:
-    """Submit source code and receive an execution id, output and full trace."""
-    result = run_python(request.source, stdin=request.stdin)
+def create_execution(
+    request: ExecutionRequest,
+    x_client_id: str | None = Header(default=None),
+) -> ExecutionResponse:
+    """Submit source code and receive an execution id, output and full trace.
+
+    Each visualization costs 1 credit from the caller's daily allowance.
+    """
+    allowed, _ = credits.charge(x_client_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                "Out of visualization credits for today. "
+                "Get Pro for a much larger daily allowance, or come back after the reset."
+            ),
+        )
+
+    result = run_traced(request.language, request.source, stdin=request.stdin)
+
+    error = result.get("error") or {}
+    if result.get("status") == "crashed" and error.get("type") in _UNMETERED_FAILURES:
+        credits.refund(x_client_id)
+
     execution_id = uuid.uuid4().hex[:12]
     _STORE[execution_id] = result
     while len(_STORE) > _STORE_LIMIT:

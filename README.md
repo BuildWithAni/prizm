@@ -91,7 +91,7 @@ prizm/
 │   └── app/
 │       ├── routes/              # executions · sessions · flowcharts · tutor
 │       ├── execution/           # Isolated child-process runner + limits
-│       ├── tracing/             # sys.settrace tracer — the heart of prizm
+│       ├── tracing/             # per-language tracers → one shared schema
 │       ├── visualization/       # AST flowchart engine
 │       ├── config.py            # env-backed config (keys in .env, gitignored)
 │       └── models.py            # Shared Pydantic trace contracts
@@ -146,12 +146,38 @@ Code runs in an **isolated child process** with a soft time limit (partial trace
 </td>
 <td width="50%">
 
-### 💸 Credit-Aware Fallback
-The tutor retries within an affordable token budget, then falls through `TUTOR_FALLBACK_MODELS` — works on free-tier API keys too.
+### 💸 Never Cut Off Mid-Code
+When the provider stops a reply at its token limit, the tutor **auto-continues it** — the partial answer is resumed and stitched into one complete message, so whole-file code writes survive free-tier output caps. Credit budgets still fall through `TUTOR_FALLBACK_MODELS`.
 
 </td>
 </tr>
 </table>
+
+<br/>
+
+---
+
+## 🌍 Language Support
+
+Thirteen languages run on the server (plus browser-side HTML preview). Nine of them have **real step-through engines** — each trace event comes from the actual runtime, never synthesized:
+
+| Language | Run | Step-through | Engine |
+|----------|-----|--------------|--------|
+| Python | ✅ | ✅ | `sys.settrace` line profiler |
+| JavaScript | ✅ | ✅ | V8 inspector protocol |
+| TypeScript | ✅ | ✅ | types stripped via Node `stripTypeScriptTypes`, then traced as JavaScript |
+| Java | ✅ | ✅ | JVM debugger (JDI) with frame-depth call/return events |
+| Kotlin | ✅ | ✅ | JVM debugger (JDI) — same driver, `kotlinc` builds `MainKt` |
+| C | ✅ | ✅ | GDB 18 embedded Python — `-g` build, line stepping, locals |
+| C++ | ✅ | ✅ | GDB 18 embedded Python |
+| Go | ✅ | ✅ | AST instrumentation emitting runtime event hooks |
+| Ruby | ✅ | ✅ | `TracePoint` in an isolated eval scope |
+| Rust | ✅ | run only | `rustc` (GNU cross-target when MSVC `link.exe` is absent) |
+| C# | ✅ | run only | isolated .NET project build + `student.dll` run |
+| PHP | ✅ | run only | PHP CLI |
+| HTML/CSS/JS | ✅ live preview | — | sandboxed iframe, rendered client-side |
+
+`GET /api/languages` reports exactly what the machine has installed (`available`, `run`, `trace`) — the UI enables **Visualize** only where a genuine tracer exists.
 
 <br/>
 
@@ -183,7 +209,7 @@ npm run dev
 
 Open **http://localhost:3000/editor** — the landing page redirects there automatically.
 
-> **Override the API URL** with `NEXT_PUBLIC_API_URL` if the backend is on a different host.
+> **Deploying on Vercel:** the root `vercel.json` rewrites `/api/*` to the FastAPI service, so the frontend and backend work on one origin without a hard-coded API URL. If hosting the API separately, set the frontend project's `NEXT_PUBLIC_API_URL` to its public base URL (for example `https://your-api.example.com`) and set `CORS_ALLOW_ORIGINS` on the API to the exact frontend origin (for example `https://your-app.vercel.app`). Set `OPENROUTER_API_KEY` on the API deployment for the tutor. Vercel environment variables are read at build time for `NEXT_PUBLIC_*`; redeploy after changing them.
 
 ### 3 — AI Tutor (optional)
 
@@ -191,8 +217,13 @@ Create a `.env` file at the repo root (gitignored):
 
 ```env
 OPENROUTER_API_KEY=sk-or-...
-TUTOR_MODEL=anthropic/claude-fable-5.1
-TUTOR_FALLBACK_MODELS=anthropic/claude-sonnet-5.5,anthropic/claude-haiku-5.5
+# Free-tier chain — works with an empty credit balance. After topping up
+# OpenRouter credits, switch the primary back, e.g. anthropic/claude-fable-5.1.
+TUTOR_MODEL=openrouter/free
+TUTOR_FALLBACK_MODELS=minimax/minimax-m3.1-flash:free,google/gemma-4-31b-it:free
+# Optional: per-call output budget; replies longer than this are continued
+# and stitched automatically (default 2048).
+TUTOR_MAX_TOKENS=2048
 ```
 
 ### 4 — Tests
@@ -211,6 +242,11 @@ TUTOR_FALLBACK_MODELS=anthropic/claude-sonnet-5.5,anthropic/claude-haiku-5.5
 |--------|----------|-------------|
 | `POST` | `/api/executions` | Submit source code → get execution id + trace |
 | `GET` | `/api/executions/{id}/trace` | Retrieve a recorded trace for playback |
+| `GET` | `/api/languages` | Which languages can run / trace on this machine |
+| `POST` | `/api/sessions` | Start an interactive run session (any language) |
+| `POST` | `/api/sessions/{id}/input` | Send a stdin line to a running session |
+| `DELETE` | `/api/sessions/{id}` | Stop a session and clean up its workdir |
+| `POST` | `/api/visualizations` | Python AST control-flow chart |
 | `POST` | `/api/tutor/explain` | Ask the AI about the selected trace step |
 | `GET` | `/api/health` | Liveness check |
 

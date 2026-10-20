@@ -13,6 +13,8 @@ import { createExecution } from "../lib/api";
 import type { ExecutionResult, Frame, FrameState, TraceEvent } from "../lib/types";
 
 const PLAY_INTERVAL_MS = 650;
+/** Playback rates offered by the transport — the trace plays like an animation. */
+export const PLAY_SPEEDS = [0.5, 1, 2] as const;
 
 /** Rebuild the call stack by replaying call/return events up to `stepIndex`. */
 function computeStack(events: TraceEvent[], stepIndex: number): Frame[] {
@@ -61,16 +63,17 @@ export function useExecution() {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState<number>(1);
 
   const events = result?.events ?? [];
   const total = events.length;
 
-  const run = useCallback(async (code: string, stdin?: string) => {
+  const run = useCallback(async (code: string, stdin?: string, language = "python") => {
     setBusy(true);
     setRequestError(null);
     setPlaying(false);
     try {
-      const execution = await createExecution(code, stdin);
+      const execution = await createExecution(code, stdin, language);
       setResult(execution);
       setStep(0);
       setSelectedFrameId(execution.events[0]?.frameId ?? null);
@@ -102,6 +105,14 @@ export function useExecution() {
     });
   }, [step, total]);
 
+  /** 0.5× → 1× → 2× → 0.5× */
+  const cycleSpeed = useCallback(() => {
+    setSpeed((current) => {
+      const index = PLAY_SPEEDS.indexOf(current as (typeof PLAY_SPEEDS)[number]);
+      return PLAY_SPEEDS[(index + 1) % PLAY_SPEEDS.length];
+    });
+  }, []);
+
   // Auto-advance while playing; stop at the end of the trace.
   useEffect(() => {
     if (!playing) return;
@@ -109,9 +120,9 @@ export function useExecution() {
       setPlaying(false);
       return;
     }
-    const timer = setTimeout(() => setStep((s) => Math.min(s + 1, total - 1)), PLAY_INTERVAL_MS);
+    const timer = setTimeout(() => setStep((s) => Math.min(s + 1, total - 1)), PLAY_INTERVAL_MS / speed);
     return () => clearTimeout(timer);
-  }, [playing, step, total]);
+  }, [playing, step, total, speed]);
 
   const currentEvent = total > 0 ? events[Math.min(step, total - 1)] : null;
 
@@ -168,5 +179,7 @@ export function useExecution() {
     togglePlay,
     selectFrame,
     reset,
+    speed,
+    cycleSpeed,
   };
 }

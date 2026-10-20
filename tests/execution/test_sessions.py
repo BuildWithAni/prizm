@@ -27,7 +27,8 @@ def test_languages_reports_python_with_trace():
     assert by_id["python"].available and by_id["python"].trace
     # This machine has Node installed (hard requirement of the repo toolchain).
     assert by_id["javascript"].run
-    assert set(by_id) == {"python", "javascript", "cpp", "java"}
+    assert {"python", "javascript", "c", "cpp", "java", "typescript", "go", "rust", "csharp", "php", "ruby", "html"} <= set(by_id)
+    assert by_id["python"].trace and by_id["java"].trace
 
 
 def test_python_session_runs_and_finishes():
@@ -68,6 +69,35 @@ def test_javascript_session_runs_when_node_present():
     assert final is not None
     assert final["status"] == "exited"
     assert "42" in final["output"]
+
+
+def test_javascript_trace_returns_line_events_and_output():
+    from app.execution.runner import run_traced
+
+    result = run_traced("javascript", "let n = 1;\nn += 2;\nconsole.log(n);\n")
+    assert result["status"] == "ok"
+    assert len(result["events"]) >= 3
+    assert {event["line"] for event in result["events"] if event["line"] is not None} >= {1, 2, 3}
+    assert result["output"] == "3\n"
+
+
+def test_java_trace_captures_lines_variables_and_output():
+    from app.execution.runner import run_traced
+
+    result = run_traced(
+        "java",
+        "public class Main {\n"
+        "  public static void main(String[] args) {\n"
+        "    int n = 1;\n"
+        "    n++;\n"
+        "    System.out.println(n);\n"
+        "  }\n"
+        "}\n",
+    )
+    assert result["status"] == "ok"
+    assert len(result["events"]) >= 2
+    assert any("n" in event["locals"] for event in result["events"])
+    assert result["output"].strip() == "2"
 
 
 def test_unknown_language_fails_cleanly():

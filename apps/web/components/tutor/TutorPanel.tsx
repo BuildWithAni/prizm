@@ -157,9 +157,10 @@ export default function TutorPanel({
                 <Markdown text={m.content} onApplyCode={onApplyCode} />
                 {m.truncated && (
                   <div className="md-truncated">
-                    ⚠ Cut off at the token limit — any code above may be
-                    incomplete. Ask for a shorter answer, or add OpenRouter
-                    credits for longer ones.
+                    ⚠ Even after automatically continuing, this answer
+                    ran past the length limit — any code above may be
+                    incomplete. Ask for a shorter version to get a
+                    complete file.
                   </div>
                 )}
               </>

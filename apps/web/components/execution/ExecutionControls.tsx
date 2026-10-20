@@ -5,6 +5,9 @@ interface ExecutionControlsProps {
   total: number;
   playing: boolean;
   busy: boolean;
+  /** Playback rate: 0.5, 1 or 2. */
+  speed: number;
+  onCycleSpeed: () => void;
   onFirst: () => void;
   onPrev: () => void;
   onTogglePlay: () => void;
@@ -19,6 +22,8 @@ export default function ExecutionControls({
   total,
   playing,
   busy,
+  speed,
+  onCycleSpeed,
   onFirst,
   onPrev,
   onTogglePlay,
@@ -62,6 +67,15 @@ export default function ExecutionControls({
         disabled={!hasTrace}
         aria-label="Execution step"
       />
+
+      <button
+        className="icon-btn speed-btn"
+        title="Playback speed — click to change how fast the animation steps"
+        onClick={onCycleSpeed}
+        disabled={!hasTrace}
+      >
+        {speed}×
+      </button>
 
       <span className="step-label">
         {hasTrace ? `Step ${step + 1} / ${total}` : "No trace yet"}

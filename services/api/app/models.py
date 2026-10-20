@@ -92,7 +92,10 @@ class TraceEvent(BaseModel):
 # --- Requests / responses ----------------------------------------------------
 
 class ExecutionRequest(BaseModel):
-    language: Literal["python"] = "python"
+    language: Literal[
+        "python", "javascript", "typescript", "java", "kotlin",
+        "c", "cpp", "go", "rust", "csharp", "php", "ruby", "html",
+    ] = "python"
     source: str = Field(min_length=1, max_length=20_000)
     # Lines the traced program may read via input()/sys.stdin (one-shot).
     stdin: Optional[str] = Field(default=None, max_length=4000)
@@ -124,6 +127,35 @@ class SessionRequest(BaseModel):
 
 class SessionInput(BaseModel):
     line: str = Field(default="", max_length=2000)
+
+
+# --- Credits & billing (Free vs Pro) ------------------------------------------
+
+Plan = Literal["free", "pro"]
+
+
+class CreditStatus(BaseModel):
+    client_id: str
+    plan: Plan
+    used: int
+    limit: int
+    remaining: int
+    resets_at: str
+
+
+class CheckoutRequest(BaseModel):
+    """Demo checkout — no payment processor is wired up in this MVP."""
+
+    client_id: Optional[str] = Field(default=None, max_length=64)
+    plan: Literal["pro"] = "pro"
+    # Accepted and ignored (present so the form has a real contract to post).
+    card_number: Optional[str] = Field(default=None, max_length=25)
+    card_name: Optional[str] = Field(default=None, max_length=80)
+
+
+class CheckoutResponse(BaseModel):
+    status: CreditStatus
+    message: str
 
 
 class SessionResponse(BaseModel):

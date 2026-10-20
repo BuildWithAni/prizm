@@ -1,13 +1,36 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
+
+import { getClientId } from "./credits";
+
+function apiPath(path: string): string {
+  // In a Vercel multi-service deployment /api/* is rewritten to FastAPI.
+  // Locally Next serves the UI on :3000 and FastAPI separately on :8000.
+  if (!API_URL && typeof window !== "undefined" && window.location.port === "3000") {
+    return `http://localhost:8000${path}`;
+  }
+  return `${API_URL}${path}`;
+}
 
 import type { ExecutionResult, Flowchart, LanguageInfo, SessionInfo } from "./types";
 
-export async function createExecution(source: string, stdin?: string): Promise<ExecutionResult> {
-  const response = await fetch(`${API_URL}/api/executions`, {
+/** Thrown when the daily visualization allowance is exhausted (HTTP 402). */
+export class CreditRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CreditRequiredError";
+  }
+}
+
+export async function createExecution(source: string, stdin?: string, language = "python"): Promise<ExecutionResult> {
+  const response = await fetch(apiPath("/api/executions"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ language: "python", source, ...(stdin ? { stdin } : {}) }),
+    headers: { "Content-Type": "application/json", "X-Client-Id": getClientId() },
+    credentials: "same-origin",
+    body: JSON.stringify({ language, source, ...(stdin ? { stdin } : {}) }),
   });
+  if (response.status === 402) {
+    throw new CreditRequiredError("Out of visualization credits for today — upgrade to Pro for more.");
+  }
   if (!response.ok) {
     throw new Error(`Execution request failed with status ${response.status}`);
   }
@@ -17,12 +40,22 @@ export async function createExecution(source: string, stdin?: string): Promise<E
 /* --- Run mode (sessions) -------------------------------------------------- */
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
+  const response = await fetch(apiPath(path), {
+    headers: { "Content-Type": "application/json", "X-Client-Id": getClientId() },
+    // Keep same-origin calls relative when no external API origin is configured.
+    // This is compatible with Vercel's /api rewrite and avoids hard-coded localhost.
+    credentials: "same-origin",
     ...init,
   });
   if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}: ${path}`);
+    let detail = `API request failed (${response.status})`;
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // Keep a useful status message for non-JSON proxy errors.
+    }
+    throw new Error(`${detail}: ${path}`);
   }
   return response.json();
 }
@@ -94,10 +127,11 @@ export interface TutorResponse {
 }
 
 export async function askTutor(body: TutorRequest): Promise<TutorResponse> {
-  const response = await fetch(`${API_URL}/api/tutor/explain`, {
+  const response = await fetch(apiPath("/api/tutor/explain"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    credentials: "same-origin",
   });
   if (!response.ok) {
     // Surface the backend's human-readable detail (missing key, timeout, ...).
@@ -111,6 +145,36 @@ export async function askTutor(body: TutorRequest): Promise<TutorResponse> {
     throw new Error(detail);
   }
   return response.json();
+}
+
+/* --- Credits & Pro plan ----------------------------------------------------- */
+
+export interface CreditStatus {
+  client_id: string;
+  plan: "free" | "pro";
+  used: number;
+  limit: number;
+  remaining: number;
+  /** ISO timestamp of the next daily reset. */
+  resets_at: string;
+}
+
+export function fetchCredits(): Promise<CreditStatus> {
+  return request("/api/credits");
+}
+
+export function checkoutPro(): Promise<{ status: CreditStatus; message: string }> {
+  return request("/api/billing/checkout", {
+    method: "POST",
+    body: JSON.stringify({ plan: "pro" }),
+  });
+}
+
+export function cancelPro(): Promise<{ status: CreditStatus; message: string }> {
+  return request("/api/billing/cancel", {
+    method: "POST",
+    body: JSON.stringify({ plan: "pro" }),
+  });
 }
 
 export { API_URL };

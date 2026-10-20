@@ -14,10 +14,14 @@ const PrismScene = dynamic(() => import("./PrismScene"), {
 
 const LANGUAGES = [
   { name: "Python", hint: "live", active: true },
-  { name: "JavaScript", hint: "beta" },
-  { name: "C++", hint: "soon" },
-  { name: "Java", hint: "soon" },
-  { name: "Coming soon", hint: "" },
+  { name: "JavaScript", hint: "live" },
+  { name: "TypeScript", hint: "live" },
+  { name: "Java", hint: "live" },
+  { name: "Kotlin", hint: "live" },
+  { name: "C", hint: "live" },
+  { name: "C++", hint: "live" },
+  { name: "Go", hint: "live" },
+  { name: "Ruby", hint: "live" },
 ];
 
 const HERO_MENU = ["Execution Flow", "Call Stack", "Variables", "Memory View", "Explain with AI"];
