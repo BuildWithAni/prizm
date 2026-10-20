@@ -24,8 +24,8 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
-FREE_DAILY_CREDITS = 20
-PRO_DAILY_CREDITS = 500
+FREE_DAILY_CREDITS = 5
+PRO_DAILY_CREDITS = 30
 
 _CLIENT_ID_RE = re.compile(r"[^A-Za-z0-9_-]")
 ANONYMOUS_CLIENT = "anonymous"

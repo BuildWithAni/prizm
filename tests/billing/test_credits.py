@@ -39,23 +39,27 @@ def _trace(client: TestClient, client_id: str | None = None) -> Response:
 
 
 def test_anonymous_status_defaults_to_free_batch(client: TestClient):
+    from app import credits
+
     response = client.get("/api/credits")
     assert response.status_code == 200
     body = response.json()
     assert body["plan"] == "free"
-    assert body["limit"] == 20
+    assert body["limit"] == credits.FREE_DAILY_CREDITS
     assert body["used"] == 0
-    assert body["remaining"] == 20
+    assert body["remaining"] == credits.FREE_DAILY_CREDITS
     assert body["resets_at"]
 
 
 def test_trace_costs_one_credit_per_client(client: TestClient):
+    from app import credits
+
     first = _trace(client, "alice")
     assert first.status_code == 200
 
     status = client.get("/api/credits", headers={"X-Client-Id": "alice"}).json()
     assert status["used"] == 1
-    assert status["remaining"] == 19
+    assert status["remaining"] == credits.FREE_DAILY_CREDITS - 1
 
     # A different browser bucket keeps its own allowance.
     other = client.get("/api/credits", headers={"X-Client-Id": "bob"}).json()
@@ -102,13 +106,15 @@ def test_checkout_activates_pro_and_raises_the_limit(client: TestClient):
 
 
 def test_cancel_returns_to_free_plan(client: TestClient):
+    from app import credits
+
     client.post("/api/billing/checkout", json={"plan": "pro"},
                 headers={"X-Client-Id": "erin"})
     cancelled = client.post("/api/billing/cancel", json={},
                             headers={"X-Client-Id": "erin"})
     assert cancelled.status_code == 200
     assert cancelled.json()["status"]["plan"] == "free"
-    assert cancelled.json()["status"]["limit"] == 20
+    assert cancelled.json()["status"]["limit"] == credits.FREE_DAILY_CREDITS
 
 
 def test_daily_rollover_resets_the_counter(client: TestClient):

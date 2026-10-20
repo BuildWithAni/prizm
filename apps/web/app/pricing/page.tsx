@@ -16,7 +16,7 @@ import { cancelPro, checkoutPro } from "../../lib/api";
  */
 
 const FREE_FEATURES = [
-  { text: "20 visualizations per day", included: true },
+  { text: "5 visualizations per day", included: true },
   { text: "Run code in 13 languages", included: true },
   { text: "Live HTML preview", included: true },
   { text: "AI tutor", included: true },
@@ -24,7 +24,7 @@ const FREE_FEATURES = [
 ];
 
 const PRO_FEATURES = [
-  { text: "500 visualizations per day", included: true },
+  { text: "30 visualizations per day", included: true },
   { text: "Everything in Free", included: true },
   { text: "Priority tracing on heavy programs", included: true },
   { text: "Pro badge in the workspace", included: true },
@@ -199,7 +199,7 @@ function PricingContent() {
 
       {phase === "done" && (
         <div className="toast" role="status">
-          ⚡ Pro activated — {credits.status?.limit ?? 500} visualizations a day.
+          ⚡ Pro activated — {credits.status?.limit ?? 30} visualizations a day.
         </div>
       )}
     </div>
