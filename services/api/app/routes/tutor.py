@@ -194,6 +194,11 @@ async def _stream_chat(payload: dict, api_key: str) -> AsyncIterator[tuple[str, 
     finish: str | None = None
     async with httpx.AsyncClient(timeout=TUTOR_TIMEOUT_SECONDS) as client:
         async with client.stream("POST", OPENROUTER_URL, json=payload, headers=headers) as response:
+            if response.status_code >= 400:
+                # The stream closes when this block exits — read the error
+                # body NOW, while it is open, so handlers can still inspect
+                # .text after the exception (a later read raises StreamClosed).
+                await response.aread()
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
@@ -219,6 +224,20 @@ def _affordable_tokens(body: str) -> int | None:
     """Parse OpenRouter's credit-cap message: '… can only afford 322 …'."""
     match = re.search(r"can only afford (\d+)", body)
     return int(match.group(1)) if match else None
+
+
+def _body_text(response: httpx.Response) -> str:
+    """Error-response body as text, '' when a stream closed unread.
+
+    Guards the retry policy against exactly one failure mode: an upstream
+    error whose body could not be captured in time must degrade the
+    credit-budget detection, never crash the route. StreamError derives
+    from RuntimeError — not httpx.HTTPError — so catch both.
+    """
+    try:
+        return response.text
+    except (httpx.StreamError, httpx.HTTPError):
+        return ""
 
 
 def _content_of(data: dict) -> str | None:
@@ -437,11 +456,18 @@ async def _open_stream(
                     continue
                 break
             except httpx.HTTPStatusError as exc:
-                # Streaming error bodies must be read before .text works.
-                await exc.response.aread()
+                # _stream_chat reads the error body while its stream is open;
+                # this is a best-effort no-op for streams that closed unread.
+                # StreamError (StreamClosed/ResponseNotRead) is NOT an
+                # httpx.HTTPError — it derives from RuntimeError, so both
+                # hierarchies must be caught or the route 500s.
+                try:
+                    await exc.response.aread()
+                except (httpx.StreamError, httpx.HTTPError):
+                    pass
                 status = exc.response.status_code
                 if status == 402:
-                    budget = _affordable_tokens(exc.response.text)
+                    budget = _affordable_tokens(_body_text(exc.response))
                     if budget is not None and _MIN_TUTOR_TOKENS <= budget < max_tokens:
                         max_tokens = budget - 10
                         continue

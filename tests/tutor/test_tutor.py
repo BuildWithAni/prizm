@@ -580,3 +580,114 @@ def test_stream_empty_stream_maps_to_502(monkeypatch: pytest.MonkeyPatch) -> Non
     response = client.post("/api/tutor/explain/stream", json={"question": "hi"})
     assert response.status_code == 502
     assert "empty answer" in response.json()["detail"]
+
+
+def test_stream_429_error_body_read_while_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: a REAL streaming 429 (raise_for_status fires inside the
+    httpx stream context) used to crash with StreamClosed when the retry
+    policy read the error body afterwards — turning a policy 429 into a 500.
+    The body is read while the stream is open, so the route answers 429
+    with the honest rate-limit detail after its patient pauses."""
+    from types import SimpleNamespace
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    def handler(request: tutor_module.httpx.Request) -> tutor_module.httpx.Response:
+        # An UNREAD async stream: once the client.stream() context exits it
+        # can no longer be read (StreamClosed) — the real-world shape of the
+        # original crash.
+        async def body() -> object:
+            yield b"rate limited"
+
+        return tutor_module.httpx.Response(
+            429, content=body(), headers={"Retry-After": "15"}
+        )
+
+    real_client = tutor_module.httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs.pop("timeout", None)
+        kwargs["transport"] = tutor_module.httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(tutor_module, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(tutor_module.httpx, "AsyncClient", client_factory)
+    monkeypatch.setattr(tutor_module, "asyncio", SimpleNamespace(sleep=fake_sleep))
+
+    response = client.post("/api/tutor/explain/stream", json={"question": "hi"})
+    assert response.status_code == 429
+    assert "rate-limiting" in response.json()["detail"]
+    # One patient pause for each of the first two models, then the chain
+    # stops — the same policy the one-shot /explain route applies.
+    assert sleeps == [15.0, 15.0]
+
+
+def test_stream_402_budget_read_from_real_stream_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real _stream_chat must capture a 402 body while its stream is
+    still open: with an unread (closed) stream the credit-budget shrink
+    degrades and the request fails hard with 402 instead of retrying
+    within the affordable token count."""
+    calls: list[tutor_module.httpx.Request] = []
+
+    def handler(request: tutor_module.httpx.Request) -> tutor_module.httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            # Unread async stream — the body must be captured while the
+            # stream context is still open or it is gone afterwards.
+            async def budget() -> object:
+                yield b"You can only afford 300 tokens"
+
+            return tutor_module.httpx.Response(402, content=budget())
+        sse = (
+            'data: {"choices":[{"delta":{"content":"within budget"}}]}\n\n'
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return tutor_module.httpx.Response(200, text=sse)
+
+    real_client = tutor_module.httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = tutor_module.httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(tutor_module, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(tutor_module.httpx, "AsyncClient", client_factory)
+
+    with client.stream(
+        "POST", "/api/tutor/explain/stream", json={"question": "hi"}
+    ) as response:
+        assert response.status_code == 200
+        frames = _sse_frames(response)
+
+    assert [f["t"] for f in frames] == ["delta", "end"]
+    assert frames[0]["text"] == "within budget"
+    # The parsed budget shrank the second attempt: 300 - 10.
+    assert [json.loads(r.content)["max_tokens"] for r in calls] == [
+        tutor_module._PER_CALL_MAX_TOKENS,
+        290,
+    ]
+
+
+def test_body_text_never_raises_on_unread_error() -> None:
+    """_body_text degrades to '' when an error body could not be captured
+    (ResponseNotRead) instead of crashing the retry policy."""
+    request = tutor_module.httpx.Request(
+        "POST", "https://openrouter.ai/api/v1/chat/completions"
+    )
+    assert tutor_module._body_text(
+        tutor_module.httpx.Response(500, request=request)
+    ) == ""
+    assert (
+        tutor_module._body_text(
+            tutor_module.httpx.Response(500, request=request, text="upstream boom")
+        )
+        == "upstream boom"
+    )
