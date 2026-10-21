@@ -3,9 +3,10 @@
  *
  *  1. Landing hamburger menu at phone width — opens, stays inside the viewport.
  *  2. Full flow: /editor → Run → Visualize — the populated visualizer (journey
- *     story with code spotlight + AI insight, the flowchart tab lit by the
- *     trace, variables, event log) at phone, laptop and desktop widths,
- *     asserting zero horizontal overflow and capturing screenshots.
+ *     story with code spotlight, step micro-diagrams and AI insight, the
+ *     flowchart tab lit by the trace, variables, event log) at phone, laptop
+ *     and desktop widths, asserting zero horizontal overflow and capturing
+ *     screenshots.
  *  3. Touch targets on the journey/transport controls at phone width.
  *
  *   node scripts/interaction-check.cjs
@@ -128,6 +129,30 @@ const pass = (name, detail) => report.push({ name, status: "PASS", detail });
       if (state.overflowX > 1) fail(`visualize-data@${width}`, `overflowX=${state.overflowX}`);
       else if (!state.panels.controls || !state.panels.journey || state.panels.events < 5) fail(`visualize-data@${width}`, `panels=${JSON.stringify(state.panels)}`);
       else pass(`visualize-data@${width}`, `journey + ${state.panels.events} event rows, overflowX=0`);
+
+      // Step visuals: walk the trace and confirm the micro-diagrams render —
+      // stack push, substituted assignment, return flight and print output.
+      {
+        const seen = new Set();
+        for (let i = 0; i < 14; i++) {
+          const kind = await page.evaluate(() => {
+            const el = document.querySelector(".journey-visual");
+            if (!el) return null;
+            const m = el.className.match(/sv-(stack|return|expr|branch|loop|print|error|plain)/);
+            return m ? m[1] : "unknown";
+          });
+          if (kind) seen.add(kind);
+          if (seen.has("stack") && seen.has("expr") && seen.has("return") && seen.has("print")) break;
+          await page.keyboard.press("ArrowRight");
+          await page.waitForTimeout(140);
+        }
+        const required = ["stack", "expr", "return", "print"];
+        const missing = required.filter((k) => !seen.has(k));
+        if (missing.length) fail(`step-visual@${width}`, `missing ${missing.join(",")} (saw ${[...seen].join(",") || "none"})`);
+        else pass(`step-visual@${width}`, `diagrams rendered: ${[...seen].join(", ")}`);
+        await page.keyboard.press("Home");
+        await page.waitForTimeout(200);
+      }
 
       // Flowchart tab with the same trace: nodes render, hot path lit, no
       // overflow — then return to Journey for the story assertions below.

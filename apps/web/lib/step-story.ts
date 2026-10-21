@@ -106,22 +106,30 @@ function visitStats(events: TraceEvent[], step: number, line: number | null, fra
   return total > 1 ? { current: before + 1, total } : null;
 }
 
-/** Variable changes inside the current frame since the previous event. */
+/**
+ * Variable changes THIS step makes inside its frame.
+ *
+ * Line events snapshot locals BEFORE the line runs, so the line's effect only
+ * appears in the next snapshot of the same frame — comparing current against
+ * that gives changes attributable to this exact step (not the previous one).
+ */
 export function frameDeltas(events: TraceEvent[], step: number): VarDelta[] {
   const ev = events[step];
   if (!ev) return [];
-  let before: Record<string, SerializedValue> | null = null;
-  for (let i = step - 1; i >= 0; i--) {
+  let post: Record<string, SerializedValue> | null = null;
+  for (let i = step + 1; i < events.length; i++) {
     if (events[i].frameId === ev.frameId) {
-      before = events[i].locals;
+      post = events[i].locals;
       break;
     }
   }
-  const names = new Set([...Object.keys(before ?? {}), ...Object.keys(ev.locals)]);
+  const before = ev.locals;
+  const after = post ?? ev.locals;
+  const names = new Set([...Object.keys(before), ...Object.keys(after)]);
   const deltas: VarDelta[] = [];
   for (const name of names) {
-    const prev = before?.[name] ?? null;
-    const next = ev.locals[name] ?? null;
+    const prev = before[name] ?? null;
+    const next = after[name] ?? null;
     if (prev === null && next === null) continue;
     if (prev !== null && next !== null && JSON.stringify(prev) === JSON.stringify(next)) continue;
     deltas.push({
@@ -133,6 +141,19 @@ export function frameDeltas(events: TraceEvent[], step: number): VarDelta[] {
     });
   }
   return deltas;
+}
+
+/** Value of `name` as first observed after `step` inside the same frame. */
+export function valueAfter(events: TraceEvent[], step: number, name: string): SerializedValue | null {
+  const cur = events[step];
+  if (!cur) return null;
+  for (let i = step + 1; i < events.length; i++) {
+    const e = events[i];
+    if (e.frameId !== cur.frameId) continue;
+    const v = e.locals[name];
+    if (v !== undefined) return v;
+  }
+  return null;
 }
 
 /* --------------------------------------------------------------------------
@@ -329,7 +350,9 @@ export function buildStepStory(
   const fn = frameLabel(ev.functionName);
   const isModule = ev.functionName === "<module>" || ev.functionName === "<main>";
   const deltas = frameDeltas(events, idx);
-  const printed = ev.output ? ev.output.trim() : "";
+  // Output attaches to the event recorded AFTER the print — a line's own
+  // output lives on the next event (other events never claim it).
+  const printed = (ev.event === "line" ? events[idx + 1]?.output ?? "" : "").trim();
   const frames = openFrames(events, idx);
   const sameFnDepth = frames.filter((f) => f.functionName === ev.functionName).length;
   const visits = ev.event === "line" ? visitStats(events, idx, ev.line, ev.frameId) : null;
@@ -415,11 +438,17 @@ export function buildStepStory(
       } else if (deltas.length === 1) {
         const d = deltas[0];
         const value = clip(formatValue(d.after), 30);
-        headline = d.isNew ? `${d.name} = ${value}` : clip(`${d.name} → ${value}`, 46);
-        what = `Line ${ev.line} runs in ${fn}. ${d.name} is now ${value}${
-          d.isNew ? " (first time this name is bound)" : d.isRemoved ? "" : d.before ? ` — it was ${clip(formatValue(d.before), 22)}` : ""
-        }.`;
-        why = `From here on, every read of ${d.name} inside ${fn} sees ${value}.`;
+        if (d.after.type === "function") {
+          headline = `def ${d.name}()`;
+          what = `Line ${ev.line} defines the function ${d.name}. Nothing inside it runs yet — a fresh stack frame is pushed only when something calls ${d.name}().`;
+          why = "Defining a function just stores it; its body executes later, at each call site.";
+        } else {
+          headline = d.isNew ? `${d.name} = ${value}` : clip(`${d.name} → ${value}`, 46);
+          what = `Line ${ev.line} runs in ${fn}. ${d.name} is now ${value}${
+            d.isNew ? " (first time this name is bound)" : d.isRemoved ? "" : d.before ? ` — it was ${clip(formatValue(d.before), 22)}` : ""
+          }.`;
+          why = `From here on, every read of ${d.name} inside ${fn} sees ${value}.`;
+        }
       } else if (deltas.length > 1) {
         headline = `${deltas.length} variables changed`;
         what = `Line ${ev.line} runs in ${fn}, updating ${deltas
@@ -505,4 +534,234 @@ export function buildStepStory(
     why,
     next,
   };
+}
+
+/* --------------------------------------------------------------------------
+   Step VISUALS — data for the per-step micro-diagrams (StepVisual.tsx).
+
+   Each spec describes a small animated picture of what this step IS: a stack
+   push with the real argument values, an assignment with identifiers
+   substituted by their live values, a condition fork with the taken path
+   known, loop iteration pips, an exception unwinding the stack. Rendering
+   stays in the component; every number here comes from the real trace.
+   -------------------------------------------------------------------------- */
+
+export type VisualToken =
+  | { t: "code"; s: string }
+  | { t: "val"; s: string; name: string; vtype: SerializedValue["type"] };
+
+export interface VisualFrame {
+  name: string;
+  line: number | null;
+}
+
+export interface VisualArg {
+  name: string;
+  value: string;
+  vtype: SerializedValue["type"];
+}
+
+export type StepVisualSpec =
+  | {
+      kind: "stack";
+      frames: VisualFrame[];
+      /** Index (into frames) of the frame being pushed this step; -1 if unknown. */
+      newFrameIndex: number;
+      args: VisualArg[];
+      hiddenBelow: number;
+      printed: string | null;
+    }
+  | {
+      kind: "return";
+      frames: VisualFrame[];
+      returningIndex: number;
+      value: string | null;
+      vtype: SerializedValue["type"] | null;
+      caller: string | null;
+      callerLine: number | null;
+      isModule: boolean;
+      printed: string | null;
+    }
+  | {
+      kind: "expr";
+      target: string;
+      op: string;
+      tokens: VisualToken[];
+      result: string | null;
+      vtype: SerializedValue["type"] | null;
+    }
+  | { kind: "branch"; tokens: VisualToken[]; result: boolean | null; isLoop: boolean }
+  | {
+      kind: "loop";
+      target: string;
+      value: string | null;
+      vtype: SerializedValue["type"] | null;
+      seq: VisualToken[];
+      visited: number;
+      total: number | null;
+    }
+  | { kind: "print"; text: string | null; tokens: VisualToken[] | null }
+  | { kind: "error"; type: string; message: string; frames: VisualFrame[]; printed: string | null }
+  | { kind: "plain"; tokens: VisualToken[] };
+
+/** Words that must never be swapped for their value lookalikes. */
+const NO_SUBSTITUTE = new Set([
+  "if", "elif", "else", "while", "for", "in", "not", "and", "or", "return", "def",
+  "import", "from", "class", "try", "except", "finally", "raise", "lambda", "is",
+  "None", "True", "False", "print", "pass", "break", "continue", "range", "len",
+  "self", "this", "null", "undefined", "var", "let", "const", "function", "new",
+]);
+
+/** Replace identifiers with their live values, keeping operators as code. */
+export function substituteTokens(
+  text: string,
+  locals: Record<string, SerializedValue>,
+): VisualToken[] {
+  const tokens: VisualToken[] = [];
+  const re =
+    /([A-Za-z_]\w*)|(\d+(?:\.\d+)?)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(\s+)|([^\sA-Za-z_0-9]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m[1] !== undefined) {
+      const word = m[1];
+      const value = locals[word];
+      // Functions/objects keep their names — substituting `<function …>` or
+      // `<Foo object …>` reprs would read far worse than the identifier.
+      if (
+        value &&
+        value.type !== "function" &&
+        value.type !== "object" &&
+        !NO_SUBSTITUTE.has(word)
+      ) {
+        tokens.push({ t: "val", s: clip(formatValue(value), 16), name: word, vtype: value.type });
+      } else {
+        tokens.push({ t: "code", s: word });
+      }
+    } else if (m[2] !== undefined) {
+      tokens.push({ t: "val", s: m[2], name: "", vtype: "number" });
+    } else if (m[3] !== undefined) {
+      tokens.push({ t: "val", s: m[3], name: "", vtype: "string" });
+    } else if (m[4] !== undefined) {
+      tokens.push({ t: "code", s: m[4] });
+    } else {
+      tokens.push({ t: "code", s: m[5] });
+    }
+  }
+  return tokens;
+}
+
+function toFrames(list: TraceEvent[]): VisualFrame[] {
+  return list.map((f) => ({ name: f.functionName, line: f.line }));
+}
+
+export function buildStepVisual(
+  events: TraceEvent[],
+  step: number,
+  code: string,
+): StepVisualSpec | null {
+  const idx = Math.min(Math.max(step, 0), events.length - 1);
+  const ev = events[idx];
+  if (!ev) return null;
+
+  const text = sourceLine(code, ev.line);
+  const isModule = ev.functionName === "<module>" || ev.functionName === "<main>";
+  const open = openFrames(events, idx);
+  // The tracer attaches output to the event recorded AFTER the print, so a
+  // line's own output lives on the next event. Other events don't claim it —
+  // their carrier output belongs to the print line that produced it.
+  const printedRaw = ev.event === "line" ? events[idx + 1]?.output ?? "" : "";
+  const printed = printedRaw.trim() ? clip(printedRaw.trim(), 120) : null;
+
+  if (ev.event === "call") {
+    return {
+      kind: "stack",
+      frames: toFrames(open),
+      newFrameIndex: open.findIndex((f) => f.frameId === ev.frameId),
+      args: Object.entries(ev.locals)
+        .slice(0, 3)
+        .map(([name, v]) => ({ name, value: clip(formatValue(v), 14), vtype: v.type })),
+      hiddenBelow: Math.max(0, open.length - 4),
+      printed,
+    };
+  }
+
+  if (ev.event === "return") {
+    return {
+      kind: "return",
+      frames: toFrames(open),
+      returningIndex: open.findIndex((f) => f.frameId === ev.frameId),
+      value: ev.value ? clip(formatValue(ev.value), 22) : null,
+      vtype: ev.value?.type ?? null,
+      caller: parentNameAt(events, idx, ev),
+      callerLine: callerLineAt(events, idx, ev),
+      isModule,
+      printed,
+    };
+  }
+
+  if (ev.event === "exception") {
+    return {
+      kind: "error",
+      type: ev.exception?.type ?? "Error",
+      message: ev.exception?.message ?? "",
+      frames: toFrames(open),
+      printed,
+    };
+  }
+
+  // Line events: what kind of statement picture fits?
+  if (printed) {
+    return { kind: "print", text: printed, tokens: null };
+  }
+  if (!text) return null;
+  const locals = ev.locals;
+
+  if (
+    /(?:^|[^\w.])(?:print|println|printf|puts|echo)\s*\(|console\.log\s*\(|fmt\.Println?\s*\(|System\.out\.print/.test(
+      text,
+    )
+  ) {
+    return { kind: "print", text: null, tokens: substituteTokens(text, locals) };
+  }
+
+  const cond = extractCondition(text);
+  if (cond) {
+    return {
+      kind: "branch",
+      tokens: substituteTokens(cond, locals),
+      result: evalCondition(cond, locals),
+      isLoop: /^\s*while\b/.test(text),
+    };
+  }
+
+  const forHead = extractFor(text);
+  if (forHead) {
+    const visits = visitStats(events, idx, ev.line, ev.frameId);
+    const targetValue = valueAfter(events, idx, forHead.target) ?? locals[forHead.target] ?? null;
+    return {
+      kind: "loop",
+      target: forHead.target,
+      value: targetValue ? clip(formatValue(targetValue), 14) : null,
+      vtype: targetValue?.type ?? null,
+      seq: substituteTokens(forHead.seq, locals),
+      visited: visits?.current ?? 1,
+      total: visits?.total ?? rangeLength(forHead.seq),
+    };
+  }
+
+  const assign = /^\s*([A-Za-z_]\w*)\s*(\*\*=|\/\/=|%=|-=|\*=|\/=|\\+=|=)\s*(.+)$/.exec(text);
+  if (assign) {
+    const [, target, op, rhs] = assign;
+    const delta = frameDeltas(events, idx).find((d) => d.name === target);
+    return {
+      kind: "expr",
+      target,
+      op,
+      tokens: substituteTokens(rhs, locals),
+      result: delta ? clip(formatValue(delta.after), 18) : null,
+      vtype: delta ? delta.after.type : null,
+    };
+  }
+
+  return { kind: "plain", tokens: substituteTokens(text, locals) };
 }

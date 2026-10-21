@@ -4,8 +4,9 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import type { SerializedValue, TraceEvent } from "../../lib/types";
 import { formatValue } from "../../lib/format";
-import { buildStepStory, frameDeltas, frameLabel, type VarDelta } from "../../lib/step-story";
+import { buildStepStory, buildStepVisual, frameDeltas, frameLabel, type VarDelta } from "../../lib/step-story";
 import { useStepInsight } from "../../hooks/useStepInsight";
+import StepVisual from "./StepVisual";
 
 interface AnimatedStepJourneyProps {
   events: TraceEvent[];
@@ -201,6 +202,7 @@ export default function AnimatedStepJourney({
   const cfg = event ? (EVENT_CONFIG[event.event] ?? EVENT_CONFIG.line) : null;
 
   const story = useMemo(() => (event ? buildStepStory(events, idx, code ?? "") : null), [events, idx, code, event]);
+  const visual = useMemo(() => (event ? buildStepVisual(events, idx, code ?? "") : null), [events, idx, code, event]);
   const deltas = useMemo(() => frameDeltas(events, idx), [events, idx]);
   const { state: ai, deeper, retry } = useStepInsight({
     events,
@@ -215,13 +217,13 @@ export default function AnimatedStepJourney({
   const callDepth = useMemo(() => {
     let depth = 0;
     let maxDepth = 0;
-    for (let i = 0; i <= idx; i++) {
+    for (let i = 0; i < totalSteps && i <= idx; i++) {
       if (events[i].event === "call") depth++;
       if (events[i].event === "return") depth = Math.max(0, depth - 1);
       maxDepth = Math.max(maxDepth, depth);
     }
     return { current: depth, max: maxDepth };
-  }, [events, idx]);
+  }, [events, idx, totalSteps]);
 
   // Burst particles when stepping into/out of a function
   useEffect(() => {
@@ -377,6 +379,9 @@ export default function AnimatedStepJourney({
               ))}
             </div>
           )}
+
+          {/* The visual: an animated micro-diagram of this exact step */}
+          {visual && <StepVisual spec={visual} />}
 
           {/* 2. WHAT HAPPENED */}
           <p className="journey-explain journey-seg" style={{ animationDelay: "0.05s" }}>
