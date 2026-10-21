@@ -126,6 +126,18 @@ export interface TutorResponse {
   truncated?: boolean;
 }
 
+/** Surface the backend's human-readable detail (missing key, timeout, ...). */
+async function tutorHttpError(response: Response): Promise<Error> {
+  let detail = `Tutor request failed with status ${response.status}`;
+  try {
+    const data = await response.json();
+    if (data && typeof data.detail === "string") detail = data.detail;
+  } catch {
+    /* non-JSON error body — keep the default message */
+  }
+  return new Error(detail);
+}
+
 export async function askTutor(body: TutorRequest): Promise<TutorResponse> {
   const response = await fetch(apiPath("/api/tutor/explain"), {
     method: "POST",
@@ -133,18 +145,77 @@ export async function askTutor(body: TutorRequest): Promise<TutorResponse> {
     body: JSON.stringify(body),
     credentials: "same-origin",
   });
-  if (!response.ok) {
-    // Surface the backend's human-readable detail (missing key, timeout, ...).
-    let detail = `Tutor request failed with status ${response.status}`;
-    try {
-      const data = await response.json();
-      if (data && typeof data.detail === "string") detail = data.detail;
-    } catch {
-      /* non-JSON error body — keep the default message */
-    }
-    throw new Error(detail);
-  }
+  if (!response.ok) throw await tutorHttpError(response);
   return response.json();
+}
+
+/**
+ * Streaming twin of askTutor: Server-Sent Events from /explain/stream.
+ * `onDelta` receives the FULL answer text accumulated so far on every token
+ * batch, so callers can just store the latest value. Failures before the
+ * first token throw; a mid-stream drop throws after the last good delta was
+ * already delivered. Falls through with the answer once `end` is reached.
+ */
+export async function askTutorStream(
+  body: TutorRequest,
+  onDelta: (fullText: string) => void,
+): Promise<TutorResponse> {
+  const response = await fetch(apiPath("/api/tutor/explain/stream"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "same-origin",
+  });
+  if (!response.ok) throw await tutorHttpError(response);
+  if (!response.body) throw new Error("The tutor stream returned no body.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let answer = "";
+  let model = "";
+  let truncated = false;
+
+  const handleFrame = (frame: string) => {
+    for (const line of frame.split("\n")) {
+      if (!line.startsWith("data:")) continue;
+      let event: {
+        t?: string;
+        text?: string;
+        model?: string;
+        truncated?: boolean;
+        message?: string;
+      };
+      try {
+        event = JSON.parse(line.slice(5).trim());
+      } catch {
+        continue; // keepalive or malformed frame — ignore
+      }
+      if (event.t === "delta" && typeof event.text === "string") {
+        answer += event.text;
+        onDelta(answer);
+      } else if (event.t === "end") {
+        if (typeof event.model === "string") model = event.model;
+        truncated = event.truncated === true;
+      } else if (event.t === "error") {
+        throw new Error(event.message || "The tutor stream failed.");
+      }
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut = buffer.indexOf("\n\n");
+    while (cut >= 0) {
+      handleFrame(buffer.slice(0, cut));
+      buffer = buffer.slice(cut + 2);
+      cut = buffer.indexOf("\n\n");
+    }
+  }
+  if (!answer.trim()) throw new Error("The tutor returned an empty answer.");
+  return { answer, model, truncated };
 }
 
 /* --- Credits & Pro plan ----------------------------------------------------- */

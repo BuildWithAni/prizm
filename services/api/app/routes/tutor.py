@@ -9,10 +9,13 @@ the conversation, and returns plain Markdown.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+from typing import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import (
@@ -173,6 +176,43 @@ async def _post_chat(payload: dict, api_key: str) -> dict:
         response = await client.post(OPENROUTER_URL, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
+
+
+async def _stream_chat(payload: dict, api_key: str) -> AsyncIterator[tuple[str, str | None]]:
+    """Streaming twin of _post_chat (seam for tests to patch).
+
+    Yields ("delta", text) tuples as tokens arrive and a final
+    ("done", finish_reason) tuple once the provider signals completion.
+    HTTP errors raise on the first iteration, exactly like _post_chat.
+    """
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "PRIZM AI Tutor",
+    }
+    finish: str | None = None
+    async with httpx.AsyncClient(timeout=TUTOR_TIMEOUT_SECONDS) as client:
+        async with client.stream("POST", OPENROUTER_URL, json=payload, headers=headers) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except ValueError:
+                    continue
+                choice = (obj.get("choices") or [{}])[0]
+                delta = (choice.get("delta") or {}).get("content")
+                if isinstance(delta, str) and delta:
+                    yield ("delta", delta)
+                reason = choice.get("finish_reason")
+                if isinstance(reason, str):
+                    finish = reason
+    yield ("done", finish)
 
 
 def _affordable_tokens(body: str) -> int | None:
@@ -347,3 +387,170 @@ async def explain(req: TutorRequest) -> TutorResponse:
         )
 
     raise HTTPException(status_code=last_status, detail=last_detail)
+
+
+async def _open_stream(
+    model_chain: list[str], messages: list[dict]
+) -> tuple[str, AsyncIterator[tuple[str, str | None]]]:
+    """Find the first model that starts streaming, under _call_model's policy.
+
+    Returns (model, iterator) with the first event already consumed and
+    prepended, so a stream that opens but yields nothing can still fall
+    through to the next model. Raises HTTPException when every model fails —
+    the route awaits this BEFORE responding, so failures surface as real
+    HTTP statuses the client can fall back on.
+    """
+    credit_detail = (
+        "Out of OpenRouter credits for the available models — top up at "
+        "https://openrouter.ai/settings/credits."
+    )
+    transient_statuses = {408, 500, 502, 503, 504}
+
+    max_tokens = _PER_CALL_MAX_TOKENS
+    last_status, last_detail = 502, credit_detail
+    consecutive_429 = 0
+
+    for model in model_chain:
+        if consecutive_429 >= 2:
+            # A second model hitting the same throttle means the window is
+            # IP/key-scoped — sweeping more models only extends it.
+            break
+        for attempt in range(4):
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.4,
+                "max_tokens": max_tokens,
+                "stream": True,
+            }
+            stream = _stream_chat(payload, OPENROUTER_API_KEY)
+            iterator = stream.__aiter__()
+            try:
+                first = await iterator.__anext__()
+            except StopAsyncIteration:
+                last_status, last_detail = 502, "The model returned an empty answer."
+                break
+            except httpx.TimeoutException:
+                last_status, last_detail = 504, "The tutor model timed out — try again."
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                break
+            except httpx.HTTPStatusError as exc:
+                # Streaming error bodies must be read before .text works.
+                await exc.response.aread()
+                status = exc.response.status_code
+                if status == 402:
+                    budget = _affordable_tokens(exc.response.text)
+                    if budget is not None and _MIN_TUTOR_TOKENS <= budget < max_tokens:
+                        max_tokens = budget - 10
+                        continue
+                    last_status, last_detail = 402, credit_detail
+                elif status == 404:
+                    last_status, last_detail = 502, f"Model {model!r} is not available on OpenRouter."
+                elif status == 429:
+                    last_status, last_detail = 429, _RATE_LIMIT_DETAIL
+                    if attempt == 0:
+                        header = exc.response.headers.get("Retry-After", "")
+                        delay = 15.0
+                        if header and header.replace(".", "", 1).isdigit():
+                            delay = min(max(float(header), 15.0), 30.0)
+                        await asyncio.sleep(delay)
+                        continue
+                    consecutive_429 += 1
+                elif status in transient_statuses:
+                    last_status = 502
+                    last_detail = f"The model provider returned {status}."
+                    if attempt < 2:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                else:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"The model provider returned {status}.",
+                    ) from exc
+                break
+            except httpx.HTTPError:
+                last_status, last_detail = 502, "Could not reach OpenRouter."
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                break
+
+            if first[0] != "delta":
+                # Opened but finished before any token — try the next model.
+                last_status, last_detail = 502, "The model returned an empty answer."
+                break
+
+            async def _with_first(
+                _first: tuple[str, str | None] = first,
+                _iterator: AsyncIterator[tuple[str, str | None]] = iterator,
+            ) -> AsyncIterator[tuple[str, str | None]]:
+                yield _first
+                async for item in _iterator:
+                    yield item
+
+            return model, _with_first()
+
+    raise HTTPException(status_code=last_status, detail=last_detail)
+
+
+def _sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+@router.post("/explain/stream")
+async def explain_stream(req: TutorRequest) -> StreamingResponse:
+    """Streaming twin of /explain: Server-Sent Events, one frame per batch of
+    tokens. The client paints each delta as it lands and reveals it with a
+    writing animation, so the answer appears in well under a second instead
+    of popping in after the full generation. Continuation stitching is not
+    done here — a length-cut stream ends early and the client shows the
+    incomplete-code warning, which the non-stream /explain path handles
+    with stitched continuations."""
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OPENROUTER_API_KEY is not configured — add it to the "
+                "repo-root .env file and restart the API server."
+            ),
+        )
+
+    history = req.history[-12:]
+    messages: list[dict] = [{"role": "system", "content": _build_system(req)}]
+    messages += [{"role": t.role, "content": t.content} for t in history]
+    messages.append({"role": "user", "content": req.question})
+
+    model_chain = [TUTOR_MODEL] + [m for m in TUTOR_FALLBACK_MODELS if m and m != TUTOR_MODEL]
+
+    # Open the stream before any bytes are flushed: 402/429/5xx from the
+    # provider chain surface as a real status code the client can fall back
+    # on, and the first delta is ready the moment 200 is sent.
+    model, iterator = await _open_stream(model_chain, messages)
+
+    async def events() -> AsyncIterator[str]:
+        truncated = False
+        try:
+            async for kind, value in iterator:
+                if kind == "delta":
+                    if value:
+                        yield _sse({"t": "delta", "text": _CUTOFF_MARKER.sub("", value)})
+                else:
+                    truncated = value == "length"
+        except httpx.HTTPError:
+            # Mid-stream provider hiccup: keep the partial answer; the client
+            # flags it, same as any other incomplete reply.
+            yield _sse({"t": "error", "message": "The connection dropped mid-answer."})
+            return
+        yield _sse({"t": "end", "model": model, "truncated": truncated})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

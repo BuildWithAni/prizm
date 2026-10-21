@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -419,3 +421,162 @@ def test_persistent_429_stops_sweeping_the_model_chain(
     assert len(models_tried) == 4
     assert len(set(models_tried)) == 2
     assert sleeps == [15.0, 15.0]
+
+
+# --- streaming route ---------------------------------------------------------
+
+
+def _sse_frames(response) -> list[dict]:
+    """Parse a `data:`-framed SSE body into JSON event dicts."""
+    frames: list[dict] = []
+    for line in response.iter_lines():
+        if line.startswith("data:"):
+            frames.append(json.loads(line[5:].strip()))
+    return frames
+
+
+def test_stream_happy_path_emits_sse_deltas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    async def fake_stream_chat(payload: dict, api_key: str):
+        captured["payload"] = payload
+        captured["api_key"] = api_key
+        yield ("delta", "Because `total` ")
+        yield ("delta", "is **6**.⚠ Cut off at the token limit\n")
+        yield ("done", "stop")
+
+    monkeypatch.setattr(tutor_module, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(tutor_module, "_stream_chat", fake_stream_chat)
+
+    with client.stream(
+        "POST",
+        "/api/tutor/explain/stream",
+        json={"question": "why is total 6?", "source": "total += k"},
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        frames = _sse_frames(response)
+
+    assert [f["t"] for f in frames] == ["delta", "delta", "end"]
+    # The provider's free-tier cutoff notice is stripped, like in /explain.
+    assert frames[0]["text"] == "Because `total` "
+    assert frames[1]["text"] == "is **6**."
+    assert frames[2]["truncated"] is False
+    assert frames[2]["model"] == tutor_module.TUTOR_MODEL
+    assert captured["api_key"] == "test-key"
+
+    payload = captured["payload"]
+    assert payload["model"] == tutor_module.TUTOR_MODEL
+    assert payload["stream"] is True
+    assert payload["max_tokens"] == tutor_module._PER_CALL_MAX_TOKENS
+    assert payload["messages"][1]["content"] == "why is total 6?"
+
+
+def test_stream_missing_key_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tutor_module, "OPENROUTER_API_KEY", "")
+    response = client.post(
+        "/api/tutor/explain/stream", json={"question": "what is a loop?"}
+    )
+    assert response.status_code == 503
+    assert "OPENROUTER_API_KEY" in response.json()["detail"]
+
+
+def test_stream_connect_error_maps_to_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Failures surface BEFORE the SSE response starts, so the client gets a
+    real status code it can fall back on instead of a broken stream."""
+    from types import SimpleNamespace
+
+    async def fake_sleep(seconds: float) -> None:
+        pass
+
+    async def boom(payload: dict, api_key: str):
+        raise tutor_module.httpx.ConnectError("nope")
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(tutor_module, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(tutor_module, "_stream_chat", boom)
+    monkeypatch.setattr(tutor_module, "asyncio", SimpleNamespace(sleep=fake_sleep))
+
+    response = client.post("/api/tutor/explain/stream", json={"question": "hi"})
+    assert response.status_code == 502
+    assert "OpenRouter" in response.json()["detail"]
+
+
+def test_stream_402_shrinks_budget_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    async def fake_stream_chat(payload: dict, api_key: str):
+        calls.append(payload)
+        if len(calls) == 1:
+            request = tutor_module.httpx.Request(
+                "POST", "https://openrouter.ai/api/v1/chat/completions"
+            )
+            response = tutor_module.httpx.Response(
+                402, request=request, text="You can only afford 300 tokens"
+            )
+            raise tutor_module.httpx.HTTPStatusError(
+                "402", request=request, response=response
+            )
+        yield ("delta", "within budget")
+        yield ("done", "stop")
+
+    monkeypatch.setattr(tutor_module, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(tutor_module, "_stream_chat", fake_stream_chat)
+
+    with client.stream(
+        "POST", "/api/tutor/explain/stream", json={"question": "hi"}
+    ) as response:
+        assert response.status_code == 200
+        frames = _sse_frames(response)
+
+    assert [f["t"] for f in frames] == ["delta", "end"]
+    assert [c["max_tokens"] for c in calls] == [
+        tutor_module._PER_CALL_MAX_TOKENS,
+        290,
+    ]
+    assert all(c["stream"] is True for c in calls)
+
+
+def test_stream_truncated_flag_in_end_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_stream_chat(payload: dict, api_key: str):
+        yield ("delta", "half an answ")
+        yield ("done", "length")
+
+    monkeypatch.setattr(tutor_module, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(tutor_module, "_stream_chat", fake_stream_chat)
+
+    with client.stream(
+        "POST", "/api/tutor/explain/stream", json={"question": "hi"}
+    ) as response:
+        frames = _sse_frames(response)
+
+    assert frames[-1] == {
+        "t": "end",
+        "model": tutor_module.TUTOR_MODEL,
+        "truncated": True,
+    }
+
+
+def test_stream_empty_stream_maps_to_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stream that opens but yields nothing falls through the whole model
+    chain and reports a real error — never an empty 200."""
+    from types import SimpleNamespace
+
+    async def fake_sleep(seconds: float) -> None:
+        pass
+
+    async def empty(payload: dict, api_key: str):
+        yield ("done", None)
+
+    monkeypatch.setattr(tutor_module, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(tutor_module, "_stream_chat", empty)
+    monkeypatch.setattr(tutor_module, "TUTOR_FALLBACK_MODELS", [])
+    monkeypatch.setattr(tutor_module, "asyncio", SimpleNamespace(sleep=fake_sleep))
+
+    response = client.post("/api/tutor/explain/stream", json={"question": "hi"})
+    assert response.status_code == 502
+    assert "empty answer" in response.json()["detail"]

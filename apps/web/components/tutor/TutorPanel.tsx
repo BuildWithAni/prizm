@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FrameState, TraceEvent } from "../../lib/types";
 import { formatValue } from "../../lib/format";
-import { askTutor, type TutorChatTurn, type TutorStepContext } from "../../lib/api";
-import Markdown from "../../lib/markdown";
+import {
+  askTutor,
+  askTutorStream,
+  type TutorChatTurn,
+  type TutorStepContext,
+} from "../../lib/api";
+import StreamedAnswer from "./StreamedAnswer";
 
 interface TutorPanelProps {
   currentEvent: TraceEvent | null;
@@ -18,6 +23,8 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   truncated?: boolean;
+  /** True while the answer is still streaming in / being written on screen. */
+  streaming?: boolean;
 }
 
 /** Prompts offered while a trace step is selected vs. before any run. */
@@ -51,11 +58,16 @@ export default function TutorPanel({
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // keep the newest message in view
-  useEffect(() => {
+  const scrollToEnd = useCallback(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, busy, error]);
+  }, []);
+
+  // keep the newest message in view (StreamedAnswer also calls scrollToEnd
+  // on every writing tick, so growth is followed line by line)
+  useEffect(() => {
+    scrollToEnd();
+  }, [messages, busy, error, scrollToEnd]);
 
   const locals = frameState?.locals ?? currentEvent?.locals ?? {};
   const stepContext: TutorStepContext | null = currentEvent
@@ -73,27 +85,70 @@ export default function TutorPanel({
   const hasStep = stepContext?.line != null;
   const prompts = hasStep ? STEP_PROMPTS : GENERAL_PROMPTS;
 
+  // An answer is being written on screen — block new questions until it lands.
+  const writing = messages.some((m) => m.streaming);
+
   const send = async (raw: string) => {
     const question = raw.trim();
-    if (!question || busy) return;
+    if (!question || busy || writing) return;
     setError(null);
     setInput("");
     const history: TutorChatTurn[] = messages.slice(-10);
+    const payload = {
+      question,
+      source,
+      language,
+      student_level: "beginner",
+      context: stepContext,
+      history,
+    };
     const withUser: Message[] = [...messages, { role: "user", content: question }];
-    setMessages(withUser);
+    const aiIndex = withUser.length; // placeholder assistant lands after the user turn
+    setMessages([...withUser, { role: "assistant", content: "", streaming: true }]);
     setBusy(true);
+
+    const update = (content: string, patch: Partial<Message> = {}) =>
+      setMessages((prev) =>
+        prev.map((m, i) => (i === aiIndex ? { ...m, ...patch, content } : m)),
+      );
+
+    let received = "";
+    let firstDelta = true;
     try {
-      const res = await askTutor({
-        question,
-        source,
-        language,
-        student_level: "beginner",
-        context: stepContext,
-        history,
+      // Streamed: each token batch paints immediately and StreamedAnswer
+      // reveals it line by line, so the answer starts appearing as soon as
+      // the model does instead of popping in after the full generation.
+      const res = await askTutorStream(payload, (full) => {
+        received = full;
+        if (firstDelta) {
+          firstDelta = false;
+          setBusy(false); // the writing animation replaces the thinking dots
+        }
+        update(full);
       });
-      setMessages([...withUser, { role: "assistant", content: res.answer, truncated: res.truncated || undefined }]);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Tutor request failed.");
+      update(res.answer, {
+        streaming: false,
+        truncated: res.truncated || undefined,
+      });
+    } catch (streamErr) {
+      if (received.trim()) {
+        // Mid-stream drop: keep what arrived, flag it honestly.
+        update(received, { streaming: false });
+        setError("The connection dropped mid-answer — showing what arrived.");
+      } else {
+        // Nothing streamed (older backend, proxy hiccup): fall back to the
+        // one-shot endpoint — it renders through the same writing animation.
+        try {
+          const res = await askTutor(payload);
+          update(res.answer, {
+            streaming: false,
+            truncated: res.truncated || undefined,
+          });
+        } catch (e) {
+          setMessages((prev) => prev.filter((_, i) => i !== aiIndex));
+          setError(e instanceof Error ? e.message : "Tutor request failed.");
+        }
+      }
     } finally {
       setBusy(false);
     }
@@ -140,7 +195,7 @@ export default function TutorPanel({
                   type="button"
                   className="tutor-chip"
                   onClick={() => void send(q)}
-                  disabled={busy}
+                  disabled={busy || writing}
                 >
                   {q}
                 </button>
@@ -154,7 +209,12 @@ export default function TutorPanel({
             <div className="tutor-msg-role">{m.role === "user" ? "You" : "Tutor"}</div>
             {m.role === "assistant" ? (
               <>
-                <Markdown text={m.content} onApplyCode={onApplyCode} />
+                <StreamedAnswer
+                  text={m.content}
+                  streaming={!!m.streaming}
+                  onApplyCode={onApplyCode}
+                  onGrow={scrollToEnd}
+                />
                 {m.truncated && (
                   <div className="md-truncated">
                     ⚠ Even after automatically continuing, this answer
@@ -206,9 +266,9 @@ export default function TutorPanel({
           type="button"
           className="btn btn-solid tutor-send"
           onClick={() => void send(input)}
-          disabled={busy || !input.trim()}
+          disabled={busy || writing || !input.trim()}
         >
-          {busy ? "…" : "Ask"}
+          {busy || writing ? "…" : "Ask"}
         </button>
       </div>
     </section>

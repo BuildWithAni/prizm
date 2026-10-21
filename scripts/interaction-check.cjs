@@ -263,31 +263,116 @@ const pass = (name, detail) => report.push({ name, status: "PASS", detail });
     await ctx.close();
   }
 
-  // Tutor copy-to-workspace (mocked API — never spends the free-tier key).
+  // Tutor streaming + copy-to-workspace (mocked API — never spends the key).
   {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await ctx.newPage();
     const tutorErrors = [];
     page.on("pageerror", (e) => tutorErrors.push(String(e).slice(0, 160)));
+    // A long (~32 line) canned answer so the line-by-line writing animation
+    // is observable in two snapshots taken while it writes.
+    const answer = [
+      "Recursion is a function calling itself — here is the shape:",
+      "",
+      "```python",
+      "def factorial(n):",
+      "    if n <= 1:",
+      "        return 1",
+      "    return n * factorial(n - 1)",
+      "```",
+      "",
+      "That block shows the base case on line 5 and the recursive call on line 7.",
+      "Each call shrinks `n` by one until it reaches the base case.",
+      "The call stack grows with every call, then unwinds as values return.",
+      "Step 1: factorial(3) asks for factorial(2).",
+      "Step 2: factorial(2) asks for factorial(1).",
+      "Step 3: factorial(1) answers 1 right away.",
+      "Step 4: factorial(2) can now answer 2 * 1 = 2.",
+      "Step 5: factorial(3) can now answer 3 * 2 = 6.",
+      "",
+      "If you would rather have the whole file, apply this block:",
+      "",
+      "```prizm",
+      "def factorial(n):",
+      "    if n <= 1:",
+      "        return 1",
+      "    return n * factorial(n - 1)",
+      "",
+      "n = factorial(5)",
+      "print(n)",
+      "```",
+      "",
+      "The workspace block replaces your editor contents with this complete program.",
+    ].join("\n");
     try {
+      // Legacy one-shot endpoint — kept mocked so the fallback path can
+      // never reach a real backend either.
       await page.route("**/api/tutor/explain", (route) =>
         route.fulfill({
           status: 200,
           contentType: "application/json",
           headers: { "access-control-allow-origin": "*" },
-          body: JSON.stringify({
-            answer:
-              "A compact snippet:\n\n```python\ndef square(n):\n    return n * n\n```\n\n" +
-              "Or the whole file:\n\n```prizm\ndef square(n):\n    result = n * n\n    return result\n\nx = 4\ny = square(x)\nprint(y)\n```\n",
-            model: "mock-tutor",
-            truncated: false,
-          }),
+          body: JSON.stringify({ answer, model: "mock-tutor", truncated: false }),
         }),
       );
+      // Streaming endpoint: three SSE delta batches + an end frame.
+      await page.route("**/api/tutor/explain/stream", (route) => {
+        const lines = answer.split("\n");
+        const third = Math.ceil(lines.length / 3);
+        const parts = [
+          lines.slice(0, third),
+          lines.slice(third, 2 * third),
+          lines.slice(2 * third),
+        ];
+        const sse =
+          parts
+            .map((part, i) =>
+              `data: ${JSON.stringify({
+                t: "delta",
+                text: part.join("\n") + (i < parts.length - 1 ? "\n" : ""),
+              })}\n\n`,
+            )
+            .join("") +
+          `data: ${JSON.stringify({ t: "end", model: "mock-tutor", truncated: false })}\n\n`;
+        return route.fulfill({
+          status: 200,
+          contentType: "text/event-stream",
+          headers: { "access-control-allow-origin": "*" },
+          body: sse,
+        });
+      });
       await page.goto(BASE_URL + "/editor", { waitUntil: "load", timeout: 60_000 });
       await page.waitForTimeout(3000);
       await page.getByRole("button", { name: /Write a small example program that demonstrates recursion/ }).click();
       await page.waitForSelector(".tutor-msg.assistant .md-pre .md-apply", { timeout: 20_000 });
+
+      // Writing animation: the answer must GROW line by line (two snapshots
+      // taken while it writes), with the skip button offered throughout.
+      const snap = () =>
+        page.evaluate(() => {
+          const body = document.querySelector(".tutor-msg.assistant .tutor-answer");
+          return {
+            lines: body?.querySelector(".md")?.childElementCount ?? -1,
+            chars: (body?.textContent || "").length,
+            skip: !!body?.querySelector(".tutor-skip"),
+          };
+        });
+      const g1 = await snap();
+      await page.screenshot({ path: path.join(shotDir, "tutor-writing-1280x900.png") });
+      await page.waitForTimeout(400);
+      const g2 = await snap();
+      if (g1.skip && g2.chars > g1.chars && g1.lines >= 0 && g2.lines >= g1.lines) {
+        pass("tutor-writing", `grew ${g1.chars} → ${g2.chars} chars over 400ms, skip offered while writing`);
+      } else {
+        fail("tutor-writing", JSON.stringify({ g1, g2 }));
+      }
+
+      // Reveal finishes: the skip button disappears and every block lands.
+      await page.waitForFunction(
+        () => !document.querySelector(".tutor-msg.assistant .tutor-skip"),
+        null,
+        { timeout: 15_000 },
+      );
 
       const info = await page.evaluate(() => {
         const blocks = [...document.querySelectorAll(".md .md-pre")];

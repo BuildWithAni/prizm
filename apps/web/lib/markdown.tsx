@@ -36,11 +36,16 @@ function FenceBlock({
   lang,
   code,
   closed,
+  writing,
   onApplyCode,
 }: {
   lang: string;
   code: string;
   closed: boolean;
+  /** True while the answer is still streaming in — an "open" block at this
+   * point usually just hasn't received its closing fence yet, so the
+   * incomplete warning is held back until writing finishes. */
+  writing?: boolean;
   onApplyCode?: (code: string) => void;
 }) {
   const [applied, setApplied] = useState(false);
@@ -55,7 +60,7 @@ function FenceBlock({
       <div className="md-pre-head">
         <span className="md-pre-tags">
           <span className="md-lang">{isWorkspace ? "workspace" : lang || "code"}</span>
-          {!closed && <span className="md-warn">incomplete</span>}
+          {!closed && !writing && <span className="md-warn">incomplete</span>}
         </span>
         {canCopy && (
           <button
@@ -85,12 +90,24 @@ const isItemStart = (l: string) => isFence(l) || isHeading(l) || isBullet(l) || 
 export default function Markdown({
   text,
   onApplyCode,
+  revealLines,
+  streaming,
 }: {
   text: string;
   onApplyCode?: (code: string) => void;
+  /** Render only the first N source lines — the writing animation feeds this
+   * so the answer grows line by line. Undefined renders everything. */
+  revealLines?: number;
+  /** True while the answer is still arriving/revealing: unclosed code blocks
+   * don't warn about being incomplete yet (their fence just hasn't landed). */
+  streaming?: boolean;
 }) {
   const nodes: ReactNode[] = [];
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const allLines = text.replace(/\r\n/g, "\n").split("\n");
+  const lines =
+    revealLines != null && revealLines < allLines.length
+      ? allLines.slice(0, revealLines)
+      : allLines;
   let i = 0;
   let key = 0;
 
@@ -112,6 +129,7 @@ export default function Markdown({
           lang={lang}
           code={body.join("\n")}
           closed={closed}
+          writing={streaming}
           onApplyCode={onApplyCode}
         />,
       );
