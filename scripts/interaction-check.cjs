@@ -8,6 +8,9 @@
  *     and desktop widths, asserting zero horizontal overflow and capturing
  *     screenshots.
  *  3. Touch targets on the journey/transport controls at phone width.
+ *  4. AI Tutor: every code block in an answer offers Copy to workspace and
+ *     clicking it really replaces the editor contents — the tutor API is
+ *     mocked here so this never spends the free-tier key.
  *
  *   node scripts/interaction-check.cjs
  */
@@ -256,6 +259,75 @@ const pass = (name, detail) => report.push({ name, status: "PASS", detail });
       await page.screenshot({ path: path.join(shotDir, `flow-visualize-${width}x${height}.png`) });
     } catch (err) {
       fail(`flow@${width}`, String(err).slice(0, 200));
+    }
+    await ctx.close();
+  }
+
+  // Tutor copy-to-workspace (mocked API — never spends the free-tier key).
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const page = await ctx.newPage();
+    const tutorErrors = [];
+    page.on("pageerror", (e) => tutorErrors.push(String(e).slice(0, 160)));
+    try {
+      await page.route("**/api/tutor/explain", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: { "access-control-allow-origin": "*" },
+          body: JSON.stringify({
+            answer:
+              "A compact snippet:\n\n```python\ndef square(n):\n    return n * n\n```\n\n" +
+              "Or the whole file:\n\n```prizm\ndef square(n):\n    result = n * n\n    return result\n\nx = 4\ny = square(x)\nprint(y)\n```\n",
+            model: "mock-tutor",
+            truncated: false,
+          }),
+        }),
+      );
+      await page.goto(BASE_URL + "/editor", { waitUntil: "load", timeout: 60_000 });
+      await page.waitForTimeout(3000);
+      await page.getByRole("button", { name: /Write a small example program that demonstrates recursion/ }).click();
+      await page.waitForSelector(".tutor-msg.assistant .md-pre .md-apply", { timeout: 20_000 });
+
+      const info = await page.evaluate(() => {
+        const blocks = [...document.querySelectorAll(".md .md-pre")];
+        return {
+          blocks: blocks.length,
+          withButton: blocks.filter((b) => b.querySelector(".md-pre-head .md-apply")).length,
+          labels: [...new Set(blocks.map((b) => b.querySelector(".md-apply")?.textContent?.trim() ?? "none"))],
+        };
+      });
+      if (info.blocks >= 2 && info.withButton === info.blocks && info.labels.length === 1 && info.labels[0] === "Copy to workspace") {
+        pass("tutor-copy-buttons", `${info.withButton}/${info.blocks} blocks offer "${info.labels[0]}"`);
+      } else {
+        fail("tutor-copy-buttons", JSON.stringify(info));
+      }
+
+      // Clicking really copies the snippet into the workspace editor.
+      const before = await page.evaluate(() =>
+        [...document.querySelectorAll(".monaco-editor .view-line")].map((l) => l.textContent).join("\n"),
+      );
+      await page.locator(".md-pre:not(.prizm) .md-apply").first().click();
+      await page.waitForTimeout(600);
+      const state = await page.evaluate(() => {
+        const btn = document.querySelector(".md-pre:not(.prizm) .md-apply");
+        return {
+          label: btn?.textContent?.trim(),
+          disabled: btn?.disabled,
+          editor: [...document.querySelectorAll(".monaco-editor .view-line")].map((l) => l.textContent).join("\n"),
+        };
+      });
+      if (state.label === "✓ copied" && state.disabled && state.editor !== before) {
+        pass("tutor-copy-click", `label=${state.label}, editor replaced with the snippet`);
+      } else {
+        fail("tutor-copy-click", JSON.stringify({ label: state.label, disabled: state.disabled, changed: state.editor !== before }));
+      }
+
+      if (tutorErrors.length) fail("tutor-pageerrors", tutorErrors.join(" | "));
+      else pass("tutor-pageerrors", "none");
+      await page.screenshot({ path: path.join(shotDir, "tutor-copy-1280x900.png") });
+    } catch (err) {
+      fail("tutor-copy", String(err).slice(0, 200));
     }
     await ctx.close();
   }

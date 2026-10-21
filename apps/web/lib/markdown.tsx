@@ -7,9 +7,11 @@ import { useState, type ReactNode } from "react";
  * headings, bullet/numbered lists, **bold**, `inline code`, hard breaks.
  * Anything else renders as plain text — safe by construction (no HTML passthrough).
  *
- * A fenced block tagged `prizm` is the workspace protocol: it holds the
- * COMPLETE new contents of the editor file, and — when properly closed —
- * gets an "Apply to workspace" button wired to the editor.
+ * EVERY fenced block carries a "Copy to workspace" button wired to the editor
+ * (when the host passes onApplyCode), so any code the tutor shows can be moved
+ * into the workspace. A block tagged `prizm` keeps its workspace badge: it
+ * holds the COMPLETE new contents of the editor file. Unclosed blocks (truncated
+ * answers) stay copyable but wear an "incomplete" warning.
  */
 
 const INLINE = /(\*\*[^*]+\*\*|`[^`]+`)/g;
@@ -43,33 +45,29 @@ function FenceBlock({
 }) {
   const [applied, setApplied] = useState(false);
   const isWorkspace = lang === "prizm";
-  const canApply = isWorkspace && closed && typeof onApplyCode === "function";
-
-  if (!isWorkspace) {
-    return (
-      <pre className="md-pre">
-        {lang && <span className="md-lang">{lang}</span>}
-        <code>{code}</code>
-      </pre>
-    );
-  }
+  // Every code block can be copied into the workspace editor — the button is
+  // only withheld when the host has no workspace to copy into (or the block
+  // is empty).
+  const canCopy = typeof onApplyCode === "function" && code.trim().length > 0;
 
   return (
-    <pre className="md-pre prizm">
+    <pre className={`md-pre${isWorkspace ? " prizm" : ""}`}>
       <div className="md-pre-head">
-        <span className="md-lang">workspace</span>
-        {!closed && <span className="md-warn">incomplete</span>}
-        {canApply && (
+        <span className="md-pre-tags">
+          <span className="md-lang">{isWorkspace ? "workspace" : lang || "code"}</span>
+          {!closed && <span className="md-warn">incomplete</span>}
+        </span>
+        {canCopy && (
           <button
             type="button"
             className="md-apply"
-            disabled={applied || !code.trim()}
+            disabled={applied}
             onClick={() => {
               onApplyCode?.(code);
               setApplied(true);
             }}
           >
-            {applied ? "✓ applied" : "Apply to workspace"}
+            {applied ? "✓ copied" : "Copy to workspace"}
           </button>
         )}
       </div>

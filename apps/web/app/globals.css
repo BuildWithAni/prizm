@@ -3404,9 +3404,6 @@ button {
 }
 
 .md .md-lang {
-  position: absolute;
-  top: 4px;
-  right: 8px;
   font-family: var(--mono);
   font-size: 8.5px;
   text-transform: uppercase;
@@ -3414,7 +3411,7 @@ button {
   color: var(--text-dim);
 }
 
-/* workspace code blocks (prizm fence → Apply to editor) --------------------- */
+/* code-block head: language tag, warnings, Copy to workspace ----------------- */
 
 .md-pre.prizm {
   padding-top: 7px;
@@ -3422,14 +3419,19 @@ button {
 
 .md-pre-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px 8px;
   margin-bottom: 6px;
 }
 
-.md-pre-head .md-lang {
-  position: static;
+.md-pre-tags {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
 }
 
 .md-warn {
@@ -3451,7 +3453,11 @@ button {
   font-family: inherit;
   font-size: 11px;
   font-weight: 700;
-  padding: 4px 10px;
+  line-height: 1.2;
+  padding: 5px 10px;
+  min-height: 26px;
+  margin-left: auto;
+  flex: none;
   cursor: pointer;
 }
 
