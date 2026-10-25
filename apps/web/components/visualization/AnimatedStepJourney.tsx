@@ -75,7 +75,7 @@ function short(value: SerializedValue, limit = 36): string {
 }
 
 /** Floating particle animation on call/return */
-function Particles({ color, count = 6 }: { color: string; count?: number }) {
+function Particles({ color, count = 8 }: { color: string; count?: number }) {
   const particles = Array.from({ length: count }, (_, i) => i);
   return (
     <div className="journey-particles" aria-hidden="true">
@@ -87,13 +87,13 @@ function Particles({ color, count = 6 }: { color: string; count?: number }) {
           initial={{ opacity: 0, scale: 0, x: 0, y: 0 }}
           animate={{
             opacity: [0, 1, 0],
-            scale: [0, 1, 0.5],
-            x: (Math.random() - 0.5) * 80,
-            y: -40 - Math.random() * 40,
+            scale: [0, 1.2, 0.4],
+            x: (Math.random() - 0.5) * 110,
+            y: -30 - Math.random() * 50,
           }}
           transition={{
             duration: 0.8 + Math.random() * 0.4,
-            delay: i * 0.06,
+            delay: i * 0.05,
             ease: "easeOut",
           }}
         />
@@ -102,86 +102,101 @@ function Particles({ color, count = 6 }: { color: string; count?: number }) {
   );
 }
 
-/** A single variable delta card with animated value morph */
-function VarDeltaCard({ delta, index }: { delta: VarDelta; index: number }) {
-  const reduce = useReducedMotion();
-  const afterDisplay = short(delta.after);
-  const beforeDisplay = delta.before ? short(delta.before) : null;
+/** Interactive Live Memory Shelf embedded directly in the Animation Theater */
+function LiveMemoryVault({
+  locals,
+  deltas,
+  reduce,
+}: {
+  locals: Record<string, SerializedValue>;
+  deltas: VarDelta[];
+  reduce: boolean | null;
+}) {
+  const entries = Object.entries(locals);
+  if (entries.length === 0) return null;
+
+  const changedSet = new Set(deltas.map((d) => d.name));
 
   return (
-    <motion.div
-      className={`journey-var-card ${delta.isNew ? "is-new" : delta.isRemoved ? "is-removed" : "is-changed"}`}
-      initial={reduce ? false : { opacity: 0, x: -20, scale: 0.95 }}
-      animate={{ opacity: 1, x: 0, scale: 1 }}
-      transition={{ duration: 0.3, delay: 0.1 + index * 0.07, ease: "easeOut" }}
-    >
-      <div className="journey-var-name">{delta.name}</div>
-      <div className="journey-var-value-row">
-        {delta.isNew ? (
-          <>
-            <motion.span
-              className="journey-var-new-badge"
-              initial={reduce ? false : { scale: 0 }}
-              animate={{ scale: 1 }}
-              transition={{ type: "spring", stiffness: 500, damping: 18, delay: 0.2 + index * 0.07 }}
-            >
-              new
-            </motion.span>
-            <motion.code
-              className="journey-var-val journey-var-val-after"
-              initial={reduce ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.25 + index * 0.07 }}
-            >
-              {afterDisplay}
-            </motion.code>
-          </>
-        ) : delta.isRemoved ? (
-          <>
-            <span className="journey-var-removed-badge">removed</span>
-            <code className="journey-var-val journey-var-val-before">{beforeDisplay}</code>
-          </>
-        ) : (
-          <>
-            {beforeDisplay && (
-              <motion.code
-                className="journey-var-val journey-var-val-before"
-                initial={reduce ? false : { opacity: 1 }}
-                animate={{ opacity: 0.5 }}
-                transition={{ duration: 0.2, delay: 0.15 }}
-              >
-                {beforeDisplay}
-              </motion.code>
-            )}
-            <span className="journey-var-arrow">→</span>
-            <AnimatePresence mode="wait">
-              <motion.code
-                key={afterDisplay}
-                className="journey-var-val journey-var-val-after"
-                initial={reduce ? false : { opacity: 0, y: 8, scale: 0.92 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -8, scale: 0.92 }}
-                transition={{ duration: 0.22, ease: "easeOut", delay: 0.1 + index * 0.05 }}
-              >
-                {afterDisplay}
-              </motion.code>
-            </AnimatePresence>
-          </>
-        )}
+    <div className="journey-memory-vault">
+      <div className="vault-header">
+        <span className="vault-title">⚡ Active Memory Shelf</span>
+        <span className="vault-count">{entries.length} in scope</span>
       </div>
-    </motion.div>
+      <div className="vault-grid">
+        {entries.map(([name, val]) => {
+          const isChanged = changedSet.has(name);
+          const delta = deltas.find((d) => d.name === name);
+          const isNew = delta?.isNew ?? false;
+
+          return (
+            <motion.div
+              key={name}
+              className={`vault-cell ${isChanged ? (isNew ? "cell-new" : "cell-updated") : ""}`}
+              initial={reduce ? false : { scale: 0.93, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.22 }}
+            >
+              <div className="vault-cell-top">
+                <span className="vault-cell-name">{name}</span>
+                <span className={`vault-type-badge sv-${val.type}`}>{val.type}</span>
+                {isChanged && (
+                  <motion.span
+                    className="vault-change-indicator"
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 20 }}
+                  >
+                    {isNew ? "+new" : "changed"}
+                  </motion.span>
+                )}
+              </div>
+
+              {val.type === "array" && Array.isArray(val.value) ? (
+                <div className="vault-array-tape">
+                  {val.value.slice(0, 5).map((item, idx) => (
+                    <div key={idx} className="vault-slot">
+                      <span className="vault-slot-idx">[{idx}]</span>
+                      <span className="vault-slot-val">{formatValue(item)}</span>
+                    </div>
+                  ))}
+                  {val.value.length > 5 && (
+                    <span className="vault-slot-more">+{val.value.length - 5}</span>
+                  )}
+                </div>
+              ) : (
+                <div className="vault-cell-val">
+                  <AnimatePresence mode="wait">
+                    <motion.span
+                      key={formatValue(val)}
+                      className={`vault-val-display sv-${val.type}`}
+                      initial={reduce ? false : { opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.18 }}
+                    >
+                      {formatValue(val)}
+                    </motion.span>
+                  </AnimatePresence>
+                </div>
+              )}
+            </motion.div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
 /**
- * The Journey panel: one step, told properly.
+ * AnimatedStepJourney: An Animation-First Visual Execution Experience.
  *
- *  1. CODE SPOTLIGHT — the real source line this step executes;
- *  2. STORY — what happened (real values), why it matters, what happens next;
- *  3. AI INSIGHT — the tutor model's take on this exact step, cached per step,
- *     fetched only when playback is paused (see useStepInsight);
- *  4. variable deltas, stack depth, timeline scrubber — with motion that
- *     follows the trace (frame push/pop colors, value morphs, pulses).
+ *  1. CODE SPOTLIGHT — real line executing with syntax glow;
+ *  2. ANIMATION THEATER — dynamic visual execution: assignment beams, decision gates,
+ *     orbital loop runners, terminal displays, and 3D stack frames;
+ *  3. LIVE MEMORY SHELF — glassmorphic memory cells and array tapes with live value morphing;
+ *  4. CRISP HUD & COLLAPSIBLE INSIGHTS — clean 1-line action banner by default,
+ *     with deep tutor explanations and AI insights accessible in a smooth toggle drawer.
  */
 export default function AnimatedStepJourney({
   events,
@@ -194,6 +209,7 @@ export default function AnimatedStepJourney({
 }: AnimatedStepJourneyProps) {
   const reduce = useReducedMotion();
   const [showParticles, setShowParticles] = useState(false);
+  const [showInsights, setShowInsights] = useState(false);
   const prevStepRef = useRef(step);
   const totalSteps = events.length;
   const idx = Math.min(Math.max(step, 0), Math.max(totalSteps - 1, 0));
@@ -225,7 +241,7 @@ export default function AnimatedStepJourney({
     return { current: depth, max: maxDepth };
   }, [events, idx, totalSteps]);
 
-  // Burst particles when stepping into/out of a function
+  // Burst particles on call/return
   useEffect(() => {
     if (step !== prevStepRef.current && event && (event.event === "call" || event.event === "return")) {
       setShowParticles(true);
@@ -244,13 +260,13 @@ export default function AnimatedStepJourney({
         <div className="journey-empty-content">
           <motion.div
             className="journey-empty-orb"
-            animate={{ scale: [1, 1.06, 1], opacity: [0.5, 0.8, 0.5] }}
+            animate={{ scale: [1, 1.08, 1], opacity: [0.5, 0.85, 0.5] }}
             transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
           />
-          <h3 className="journey-empty-title">Ready to Visualize</h3>
+          <h3 className="journey-empty-title">Ready to Animate</h3>
           <p className="journey-empty-desc">
-            Press <strong>▶ Visualize</strong> and watch every single step of your program come alive — with
-            the real code line, grounded explanations, AI insights, variable changes and animated flow.
+            Press <strong>▶ Visualize</strong> to watch an animated step-by-step playback of your program —
+            with memory registers, flow beams, data structures and live execution.
           </p>
         </div>
       </section>
@@ -267,12 +283,12 @@ export default function AnimatedStepJourney({
         <motion.div
           className="journey-progress-fill"
           animate={{ width: `${progress}%` }}
-          transition={{ duration: 0.25, ease: "easeOut" }}
-          style={{ background: `linear-gradient(90deg, ${cfg.color} 0%, ${cfg.color}aa 100%)` }}
+          transition={{ duration: 0.22, ease: "easeOut" }}
+          style={{ background: `linear-gradient(90deg, ${cfg.color} 0%, ${cfg.color}ee 100%)` }}
         />
       </div>
 
-      {/* Step counter header */}
+      {/* Control Header */}
       <header className="journey-header">
         <div
           className="journey-step-badge"
@@ -281,23 +297,33 @@ export default function AnimatedStepJourney({
           <span className="journey-step-icon" aria-hidden="true">{cfg.icon}</span>
           <span className="journey-step-type">{cfg.label}</span>
         </div>
+
+        {playing && (
+          <div className="journey-live-indicator">
+            <span className="journey-live-dot" />
+            <span className="journey-live-text">ANIMATING</span>
+          </div>
+        )}
+
         <span className="journey-step-counter">
           {idx + 1} <span className="journey-step-of">of</span> {totalSteps}
         </span>
+
         {onTogglePlay && (
           <button
-            className="journey-play-btn"
+            className={`journey-play-btn ${playing ? "is-playing" : ""}`}
             onClick={onTogglePlay}
-            title={playing ? "Pause playback (space)" : "Play the trace (space)"}
+            title={playing ? "Pause animation (space)" : "Play animation (space)"}
           >
             {playing ? "⏸" : "▶"}
           </button>
         )}
+
         <button
           className="journey-prev-btn"
           onClick={() => onJump(Math.max(0, idx - 1))}
           disabled={idx <= 0}
-          title="Previous step"
+          title="Previous step (←)"
         >
           ←
         </button>
@@ -305,67 +331,35 @@ export default function AnimatedStepJourney({
           className="journey-next-btn"
           onClick={() => onJump(Math.min(totalSteps - 1, idx + 1))}
           disabled={idx >= totalSteps - 1}
-          title="Next step"
+          title="Next step (→)"
         >
           →
         </button>
       </header>
 
-      {/* Main animated card */}
+      {/* Main Animated Card */}
       <AnimatePresence mode="wait">
         <motion.div
           key={`journey-${idx}`}
-          className="journey-card"
+          className="journey-card journey-card-animated"
           style={{ background: `linear-gradient(${cfg.gradient})`, borderColor: cfg.border }}
-          initial={reduce ? false : { opacity: 0, y: 16, scale: 0.97 }}
+          initial={reduce ? false : { opacity: 0, y: 12, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={reduce ? {} : { opacity: 0, y: -16, scale: 0.97 }}
-          transition={{ duration: 0.28, ease: "easeOut" }}
+          exit={reduce ? {} : { opacity: 0, y: -12, scale: 0.98 }}
+          transition={{ duration: 0.24, ease: "easeOut" }}
         >
-          {showParticles && <Particles color={cfg.particle} count={8} />}
+          {showParticles && <Particles color={cfg.particle} count={10} />}
 
-          {/* 1. The real code line this step executes */}
+          {/* 1. Code Spotlight Banner */}
           {story.codeLine && (
             <div className="journey-spotlight">
-              <span className="journey-spot-no">{story.codeLineNo}</span>
+              <span className="journey-spot-no">L{story.codeLineNo}</span>
               <code className="journey-spot-code">{story.codeLine}</code>
+              <span className="journey-spot-fn">{frameLabel(event.functionName)}</span>
             </div>
           )}
 
-          {/* Headline — built from real values */}
-          <motion.h2
-            className="journey-headline"
-            style={{ color: cfg.color }}
-            initial={reduce ? false : { opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.22, delay: 0.04 }}
-          >
-            {story.headline}
-          </motion.h2>
-
-          {/* Location context */}
-          <motion.div
-            className="journey-location"
-            initial={reduce ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.2, delay: 0.08 }}
-          >
-            <span className="journey-loc-fn">{frameLabel(event.functionName)}</span>
-            {event.line != null && (
-              <>
-                <span className="journey-loc-sep">·</span>
-                <span className="journey-loc-line">line {event.line}</span>
-              </>
-            )}
-            {callDepth.current > 1 && (
-              <>
-                <span className="journey-loc-sep">·</span>
-                <span className="journey-loc-depth">depth {callDepth.current}</span>
-              </>
-            )}
-          </motion.div>
-
-          {/* Fact chips — iteration, printed output, recursion */}
+          {/* Fact Chips */}
           {story.chips.length > 0 && (
             <div className="journey-chips">
               {story.chips.map((chip) => (
@@ -380,104 +374,104 @@ export default function AnimatedStepJourney({
             </div>
           )}
 
-          {/* The visual: an animated micro-diagram of this exact step */}
-          {visual && <StepVisual spec={visual} />}
-
-          {/* 2. WHAT HAPPENED */}
-          <p className="journey-explain journey-seg" style={{ animationDelay: "0.05s" }}>
-            {story.what}
-          </p>
-
-          {/* WHY IT MATTERS */}
-          {story.why && (
-            <div className="journey-tip journey-seg" style={{ animationDelay: "0.13s" }}>
-              <span className="journey-seg-label">why it matters</span>
-              {story.why}
+          {/* 2. Centerpiece: The Animated Visual Theater */}
+          {visual && (
+            <div className="journey-theater-stage">
+              <StepVisual spec={visual} />
             </div>
           )}
 
-          {/* 3. AI INSIGHT — the tutor model on this exact step */}
-          <div
-            className={`journey-ai journey-seg ${ai.status}${ai.autoOff ? " auto-off" : ""}`}
-            style={{ animationDelay: "0.2s" }}
-          >
-            <div className="journey-ai-head">
-              <span className="journey-ai-spark" aria-hidden="true">✨</span>
-              <span className="journey-ai-title">AI insight</span>
-              {ai.status === "ready" && ai.model && (
-                <span className="journey-ai-model">{ai.model.split("/").pop()}</span>
-              )}
-              <button
-                type="button"
-                className="journey-ai-deeper"
-                onClick={deeper}
-                disabled={ai.status === "loading"}
-                title="Ask the AI tutor for a deeper explanation of this step"
-              >
-                {ai.status === "loading" ? "…" : "Deeper ↓"}
-              </button>
-            </div>
-            {ai.status === "loading" ? (
-              <div className="journey-ai-shimmer" aria-label="thinking">
-                <span />
-                <span />
-                <span />
-              </div>
-            ) : ai.status === "ready" ? (
-              <p className="journey-ai-text">{ai.text}</p>
-            ) : ai.status === "failed" ? (
-              <p className="journey-ai-note">
-                {ai.error ?? "The AI tutor is unavailable right now."}{" "}
-                <button type="button" className="journey-ai-retry" onClick={retry}>
-                  retry
-                </button>
-              </p>
-            ) : (
-              <p className="journey-ai-waiting">
-                {ai.autoOff
-                  ? "Automatic insights are paused — press Deeper to ask the AI."
-                  : "Pause on any step to summon an AI explanation."}
-              </p>
-            )}
+          {/* 3. Live Active Memory Shelf */}
+          {event.locals && Object.keys(event.locals).length > 0 && (
+            <LiveMemoryVault locals={event.locals} deltas={deltas} reduce={reduce} />
+          )}
+
+          {/* 4. Action Banner (1-line punchy caption) */}
+          <div className="journey-action-caption">
+            <span className="journey-caption-glyph" style={{ color: cfg.color }}>⚡</span>
+            <span className="journey-caption-text">{story.what}</span>
           </div>
 
-          {/* 4. WHAT HAPPENS NEXT */}
-          <div className="journey-nextrow journey-seg" style={{ animationDelay: "0.26s" }}>
-            <span className="journey-seg-label">next</span>
-            <span className="journey-next-body">
-              {story.next ? `→ ${story.next}` : "✔ end of trace — the program finished"}
-            </span>
+          {/* 5. Collapsible Deep Explanations & AI Insights */}
+          <div className="journey-insights-drawer">
+            <button
+              type="button"
+              className="journey-insights-toggle"
+              onClick={() => setShowInsights((prev) => !prev)}
+            >
+              <span className="insights-toggle-icon">💡</span>
+              <span className="insights-toggle-title">
+                {showInsights ? "Hide Tutor Explanations" : "View Tutor Insights & Details"}
+              </span>
+              <span className="insights-toggle-chevron">{showInsights ? "▲" : "▼"}</span>
+            </button>
+
+            <AnimatePresence>
+              {showInsights && (
+                <motion.div
+                  className="journey-insights-body"
+                  initial={reduce ? false : { opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  {story.why && (
+                    <div className="journey-tip">
+                      <span className="journey-seg-label">concept insight</span>
+                      {story.why}
+                    </div>
+                  )}
+
+                  {/* AI Tutor insight */}
+                  <div className={`journey-ai ${ai.status}`}>
+                    <div className="journey-ai-head">
+                      <span className="journey-ai-spark" aria-hidden="true">✨</span>
+                      <span className="journey-ai-title">AI Tutor Analysis</span>
+                      {ai.status === "ready" && ai.model && (
+                        <span className="journey-ai-model">{ai.model.split("/").pop()}</span>
+                      )}
+                      <button
+                        type="button"
+                        className="journey-ai-deeper"
+                        onClick={deeper}
+                        disabled={ai.status === "loading"}
+                      >
+                        {ai.status === "loading" ? "…" : "Ask Deeper ↓"}
+                      </button>
+                    </div>
+                    {ai.status === "loading" ? (
+                      <div className="journey-ai-shimmer" aria-label="thinking">
+                        <span /><span /><span />
+                      </div>
+                    ) : ai.status === "ready" ? (
+                      <p className="journey-ai-text">{ai.text}</p>
+                    ) : ai.status === "failed" ? (
+                      <p className="journey-ai-note">
+                        {ai.error ?? "AI tutor unavailable."}{" "}
+                        <button type="button" className="journey-ai-retry" onClick={retry}>
+                          retry
+                        </button>
+                      </p>
+                    ) : (
+                      <p className="journey-ai-waiting">Pause playback on any step to summon AI insights.</p>
+                    )}
+                  </div>
+
+                  {/* Next up */}
+                  <div className="journey-nextrow">
+                    <span className="journey-seg-label">next step</span>
+                    <span className="journey-next-body">
+                      {story.next ? `→ ${story.next}` : "✔ end of execution trace"}
+                    </span>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </motion.div>
       </AnimatePresence>
 
-      {/* Variable changes section */}
-      <AnimatePresence>
-        {deltas.length > 0 && (
-          <motion.div
-            className="journey-vars"
-            initial={reduce ? false : { opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.3 }}
-          >
-            <div className="journey-vars-header">
-              <span className="journey-vars-title">Variable Changes</span>
-              <span className="journey-vars-count">{deltas.length} changed</span>
-            </div>
-            <div className="journey-vars-grid">
-              {deltas.slice(0, 6).map((delta, i) => (
-                <VarDeltaCard key={delta.name} delta={delta} index={i} />
-              ))}
-              {deltas.length > 6 && (
-                <div className="journey-vars-more">+{deltas.length - 6} more changes</div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Stack depth viz */}
+      {/* Stack depth visualizer */}
       {callDepth.max > 1 && (
         <div className="journey-stack-viz">
           <span className="journey-stack-label">Stack depth</span>

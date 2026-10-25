@@ -23,7 +23,7 @@ import type { Flowchart } from "../../../lib/types";
 type Tab = "journey" | "state" | "flowchart" | "calltree" | "values";
 
 const TABS: { id: Tab; label: string; hint: string }[] = [
-  { id: "journey", label: "✨ Journey", hint: "Animated step-by-step learning mode with explanations and variable change animations" },
+  { id: "journey", label: "Visualisation", hint: "Animated step-by-step visual execution with memory cells and live flow" },
   { id: "state", label: "State", hint: "Call stack and variables for the selected step" },
   { id: "flowchart", label: "Flowchart", hint: "Control flow of your program, lit up as it executes" },
   { id: "calltree", label: "Call Tree", hint: "Every function call, as a tree you can click through" },
@@ -69,7 +69,11 @@ export default function VisualizePage() {
 
   /* --- record a trace when the buffer changed ----------------------------- */
 
-  const traceIsStale = !tracedFor || tracedFor.code !== code || tracedFor.language !== language;
+  const traceIsStale =
+    !tracedFor ||
+    tracedFor.code !== code ||
+    tracedFor.language !== language ||
+    (tracedFor.stdin ?? "") !== traceStdin;
 
   useEffect(() => {
     if (!traceCapable || execution.busy) return;
@@ -377,37 +381,67 @@ export default function VisualizePage() {
               </section>
             ) : (
               <>
-                {traceFailed && (
+                {showStdinPrompt ? (
+                  <div className="viz-stdin-card">
+                    <div className="viz-stdin-badge">
+                      <span className="viz-stdin-pulse" aria-hidden="true" />
+                      <span className="viz-stdin-icon" aria-hidden="true">⌨️</span>
+                      <strong>Program Waiting for Input</strong>
+                    </div>
+                    <p className="viz-stdin-desc">
+                      This program reads data with <code>input()</code>. Provide input lines below to animate its execution:
+                    </p>
+
+                    <form
+                      className="viz-stdin-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        const field = event.currentTarget.elements.namedItem("stdin") as HTMLInputElement;
+                        const line = field.value.trim();
+                        if (!line) return;
+                        const nextStdin = traceStdin ? `${traceStdin}\n${line}` : line;
+                        addTraceStdin(line);
+                        field.value = "";
+                        void runTrace(nextStdin);
+                      }}
+                    >
+                      <div className="viz-stdin-input-row">
+                        <input
+                          name="stdin"
+                          autoFocus
+                          className="viz-stdin-input"
+                          placeholder="Type input for program (e.g. 42, Alice, 10)..."
+                        />
+                        <button type="submit" className="btn btn-solid viz-stdin-submit" disabled={execution.busy}>
+                          {execution.busy ? "Tracing…" : "Send & Visualize ⏎"}
+                        </button>
+                      </div>
+
+                      <div className="viz-stdin-presets">
+                        <span className="viz-presets-label">Quick test inputs:</span>
+                        {["42", "Alice", "10", "1 2 3", "yes"].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            className="viz-preset-chip"
+                            onClick={() => {
+                              const nextStdin = traceStdin ? `${traceStdin}\n${preset}` : preset;
+                              addTraceStdin(preset);
+                              void runTrace(nextStdin);
+                            }}
+                          >
+                            +{preset}
+                          </button>
+                        ))}
+                      </div>
+                    </form>
+                  </div>
+                ) : traceFailed ? (
                   <div className="error-card">
                     <strong>{traceFailed.type}</strong>
                     <span>{traceFailed.message}</span>
-                    {showStdinPrompt && (
-                      <span className="error-hint">
-                        This program reads input. Type a line below — it becomes stdin for the next traced run.
-                      </span>
-                    )}
                   </div>
-                )}
-
-                {showStdinPrompt && (
-                  <form
-                    className="viz-stdin"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      const field = event.currentTarget.elements.namedItem("stdin") as HTMLInputElement;
-                      const line = field.value.trim();
-                      if (!line) return;
-                      addTraceStdin(line);
-                      field.value = "";
-                      void runTrace();
-                    }}
-                  >
-                    <input name="stdin" className="viz-stdin-input" placeholder="a line of input for the program…" />
-                    <button type="submit" className="btn btn-outline">
-                      Send ⏎
-                    </button>
-                  </form>
-                )}
+                ) : null}
 
                 {tab === "journey" && (
                   <AnimatedStepJourney
@@ -509,9 +543,16 @@ export default function VisualizePage() {
       {traceStdin && (
         <div className="viz-stdin-queued">
           <span className="stdin-chip" title={`Queued stdin (click to clear):\n${traceStdin}`}>
-            stdin: {traceStdin.split("\n").length} lines
+            ⌨️ stdin: {traceStdin.split("\n").length} line{traceStdin.split("\n").length > 1 ? "s" : ""} ({traceStdin.replace(/\n/g, ", ")})
           </span>
-          <button type="button" className="btn btn-ghost" onClick={clearTraceStdin}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              clearTraceStdin();
+              void runTrace("");
+            }}
+          >
             Clear input
           </button>
         </div>

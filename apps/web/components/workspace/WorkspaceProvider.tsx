@@ -23,12 +23,13 @@ interface WorkspaceValue {
   changeLanguage: (language: string) => void;
   /** Stdin lines queued for the next traced run (one line per input()). */
   traceStdin: string;
+  setTraceStdin: (stdin: string) => void;
   addTraceStdin: (line: string) => void;
   clearTraceStdin: () => void;
-  /** Source + language the current trace was recorded from (null = none). */
-  tracedFor: { code: string; language: string } | null;
-  /** Record a trace for the current buffer. Resolves when the trace lands. */
-  runTrace: () => Promise<void>;
+  /** Source + language + stdin the current trace was recorded from (null = none). */
+  tracedFor: { code: string; language: string; stdin?: string } | null;
+  /** Record a trace for the current buffer. Resolves when the trace lands. Accepts optional immediate stdin override. */
+  runTrace: (customStdin?: string) => Promise<void>;
   /** Step-through trace state (shared by every visual panel). */
   execution: ReturnType<typeof useExecution>;
   /** Live run session state (console on the editor page). */
@@ -41,7 +42,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [code, setCode] = useState(TEMPLATES.python);
   const [language, setLanguage] = useState("python");
   const [traceStdin, setTraceStdin] = useState("");
-  const [tracedFor, setTracedFor] = useState<{ code: string; language: string } | null>(null);
+  const [tracedFor, setTracedFor] = useState<{ code: string; language: string; stdin?: string } | null>(null);
 
   const execution = useExecution();
   const runner = useSession();
@@ -66,19 +67,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const clearTraceStdin = useCallback(() => setTraceStdin(""), []);
 
-  const runTrace = useCallback(async () => {
-    // Check the meter first (the API also enforces it with a 402) so an empty
-    // allowance opens the upgrade path instead of a failed request.
-    const status = await credits.refresh();
-    if (status && status.remaining <= 0) return;
+  const runTrace = useCallback(
+    async (customStdin?: string) => {
+      // Check the meter first (the API also enforces it with a 402) so an empty
+      // allowance opens the upgrade path instead of a failed request.
+      const status = await credits.refresh();
+      if (status && status.remaining <= 0) return;
 
-    await execution.run(code, traceStdin || undefined, language);
-    // Remember which buffer the trace describes so the visualizer knows
-    // whether it can reuse it or must record a fresh one.
-    setTracedFor({ code, language });
-    // The trace spent a credit — keep the visible counter honest.
-    await credits.refresh();
-  }, [execution, code, language, traceStdin, credits]);
+      const stdinToUse = customStdin !== undefined ? customStdin : traceStdin;
+      await execution.run(code, stdinToUse || undefined, language);
+      // Remember which buffer and stdin the trace describes so the visualizer knows
+      // whether it can reuse it or must record a fresh one.
+      setTracedFor({ code, language, stdin: stdinToUse });
+      // The trace spent a credit — keep the visible counter honest.
+      await credits.refresh();
+    },
+    [execution, code, language, traceStdin, credits],
+  );
 
   const value = useMemo<WorkspaceValue>(
     () => ({
@@ -87,6 +92,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       language,
       changeLanguage,
       traceStdin,
+      setTraceStdin,
       addTraceStdin,
       clearTraceStdin,
       tracedFor,
@@ -99,6 +105,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       language,
       changeLanguage,
       traceStdin,
+      setTraceStdin,
       addTraceStdin,
       clearTraceStdin,
       tracedFor,
